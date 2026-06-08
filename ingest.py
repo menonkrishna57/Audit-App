@@ -82,7 +82,7 @@ def collect_files(repo_path: str) -> list[Path]:
         "embeddings", "vectors", ".qdrant", "qdrant_storage", ".chroma", ".faiss",
         ".vscode", ".idea", ".pytest_cache", ".ruff_cache", ".mypy_cache",
         # Third-party / vendor code — excluded to prevent polluting audit results
-        "vendor", "lib", "static", "assets", "themes", "bower_components"
+        "vendor", "lib", "static", "assets", "themes", "bower_components",".conda","reports"
     }
     skip_files = {
         "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
