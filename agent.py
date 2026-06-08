@@ -1,6 +1,7 @@
 import ast
 import json
 import os
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -12,16 +13,16 @@ from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
-from prompts import AUDIT_CATEGORIES, DUPLICATE_INSTRUCTION
+from prompts import SYSTEM_PROMPT, REPORT_CONFIG
 
 load_dotenv()  # loads GOOGLE_API_KEY from .env if present
 
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "code_audit"
 OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"  # local fallback
-OLLAMA_MODEL = "qwen3:4b"
+
+LLM_MODEL = "qwen3:4b-q4_K_M"
 GEMINI_MODEL = "gemini-2.0-flash-lite"  # free tier on AI Studio
-TOP_K = 3   # chunks retrieved per category (larger chunks = fewer needed)
 
 console = Console()
 
@@ -61,8 +62,12 @@ def get_llm(provider: str):
             google_api_key=api_key,
         )
     else:
-        console.print(f"[bold green]Provider:[/bold green] Ollama ({OLLAMA_MODEL})\n")
-        return OllamaLLM(model=OLLAMA_MODEL, temperature=0.1)
+        console.print(f"[bold green]Provider:[/bold green] Ollama ({LLM_MODEL})\n")
+        return OllamaLLM(
+            model=LLM_MODEL, 
+            temperature=0.1,
+            num_ctx=2048,  # Hard limit to save KV cache VRAM
+        )
 
 
 def get_vectorstore(embeddings_provider: str = "ollama"):
@@ -74,37 +79,25 @@ def get_vectorstore(embeddings_provider: str = "ollama"):
         embedding=embeddings,
     )
 
-def extract_function_signatures(repo_path: str) -> str:
-    """Walk the repo and extract all function/method names using AST parsing.
-    Returns a formatted string listing functions per file for duplicate detection."""
-    skip_dirs = {
-        ".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
-        ".next", ".nuxt", ".cache", "vendor", "lib", "static", "assets",
-        ".qdrant", "qdrant_storage", ".vscode", ".idea", ".pytest_cache"
-    }
-    lines = []
-    for path in Path(repo_path).rglob("*.py"):
-        if any(part in skip_dirs for part in path.parts):
-            continue
-        try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(source)
-            funcs = [
-                node.name for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            ]
-            if funcs:
-                rel = path.relative_to(repo_path)
-                lines.append(f"File: {rel}\n  Functions: {', '.join(funcs)}")
-        except SyntaxError:
-            pass
-    return "\n".join(lines) if lines else "No Python files found."
-
-def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
-    # Retrieve relevant chunks
-    docs = vectorstore.similarity_search(config["query"], k=TOP_K)
+async def audit_category(llm, vectorstore, category: str, config: dict, progress: Progress, task_id) -> dict:
+    docs = []
+    seen = set()
+    # Execute searches concurrently for all queries in the config
+    
+    def sync_search(query):
+        return vectorstore.similarity_search(query, k=config["top_k"])
+        
+    search_tasks = [asyncio.to_thread(sync_search, q) for q in config["queries"]]
+    results = await asyncio.gather(*search_tasks)
+    
+    for res_list in results:
+        for d in res_list:
+            if d.page_content not in seen:
+                seen.add(d.page_content)
+                docs.append(d)
 
     if not docs:
+        progress.advance(task_id)
         return {"category": category, "findings": "No relevant code found.", "chunks_analyzed": 0}
 
     # Build context from retrieved chunks
@@ -114,16 +107,14 @@ def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
         context_parts.append(f"--- Chunk {i+1} | File: {file_ref} ---\n{doc.page_content}")
     context = "\n\n".join(context_parts)
 
-    prompt = f"""{config['instruction']}
+    prompt = f"""{SYSTEM_PROMPT}
 
-== Code chunks to analyze ==
-{context}
-
-== Your findings ==
-Be specific. Reference file names. If no issues found in this area, say so clearly.
+{config['prompt_template'].replace('{context}', context)}
 """
 
-    response = llm.invoke(prompt)
+    response = await llm.ainvoke(prompt)
+    progress.advance(task_id)
+    
     return {
         "category": category,
         "findings": response,
@@ -131,11 +122,11 @@ Be specific. Reference file names. If no issues found in this area, say so clear
         "files_sampled": list({d.metadata.get("file", "?") for d in docs}),
     }
 
-def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
+async def run_audit_async(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
     llm = get_llm(provider)
     vectorstore = get_vectorstore(embeddings_provider)
 
-    console.print(f"[bold green]Starting audit...[/bold green]")
+    console.print(f"[bold green]Starting async audit...[/bold green]")
     
     results = {}
     with Progress(
@@ -146,47 +137,34 @@ def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddi
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("[cyan]Starting audit...", total=len(AUDIT_CATEGORIES) + 1)
+        main_task = progress.add_task("[cyan]Running reports concurrently...", total=len(REPORT_CONFIG) + 1)
         
-        for category, config in AUDIT_CATEGORIES.items():
-            progress.update(task, description=f"[cyan]Auditing:[/cyan] {category}")
-            results[category] = audit_category(llm, vectorstore, category, config)
-            progress.advance(task)
+        # Dispatch all categories concurrently
+        tasks = []
+        for category, config in REPORT_CONFIG.items():
+            tasks.append(audit_category(llm, vectorstore, category, config, progress, main_task))
+            
+        completed_reports = await asyncio.gather(*tasks)
+        for rep in completed_reports:
+            results[rep["category"]] = rep
 
-        # Duplicate detection via static analysis (AST), not RAG
-        progress.update(task, description="[cyan]Auditing:[/cyan] duplicate_logic (static)")
-        signatures = extract_function_signatures(".")
-        dup_prompt = f"""{DUPLICATE_INSTRUCTION}
-
-== Function inventory ==
-{signatures}
-
-== Your findings =="""
-        dup_response = llm.invoke(dup_prompt)
-        results["duplicate_logic"] = {
-            "category": "duplicate_logic",
-            "findings": dup_response,
-            "chunks_analyzed": signatures.count("File:"),
-            "files_sampled": [],
-        }
-        progress.advance(task)
-
-        progress.update(task, description="[cyan]Generating executive summary...[/cyan]")
+        progress.update(main_task, description="[cyan]Generating executive summary...[/cyan]")
         
         # Build summary
         summary_input = "\n\n".join(
             f"## {r['category'].upper()}\n{r['findings']}" for r in results.values()
         )
         summary_prompt = f"""You are a senior software engineer writing an executive summary of a code audit.
-Below are findings across four audit categories. Write a concise 3-5 sentence executive summary
+Below are findings across {len(REPORT_CONFIG)} audit categories. Write a concise 3-5 sentence executive summary
 that highlights the most critical issues and the overall health of the codebase.
 
 {summary_input}
 
 Executive summary:"""
 
-        summary = llm.invoke(summary_prompt)
-        progress.update(task, description="[green]Audit complete![/green]")
+        summary = await llm.ainvoke(summary_prompt)
+        progress.advance(main_task)
+        progress.update(main_task, description="[green]Audit complete![/green]")
 
     # Assemble report
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -230,4 +208,4 @@ if __name__ == "__main__":
     parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
                         help="Embedding provider — must match what was used during ingest (default: ollama)")
     args = parser.parse_args()
-    run_audit(args.format, args.provider, args.embeddings)
+    asyncio.run(run_audit_async(args.format, args.provider, args.embeddings))
