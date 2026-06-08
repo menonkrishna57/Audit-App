@@ -3,17 +3,54 @@ import hashlib
 from pathlib import Path
 from tqdm import tqdm
 
+from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
+load_dotenv()
+
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "code_audit"
-EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"
+OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 150
+
+def get_embeddings(provider: str):
+    """Return the appropriate LangChain Embeddings object based on provider.
+    
+    All providers output 768-dimensional vectors to match the Qdrant collection.
+    WARNING: You must use the same provider for both ingest and agent.py.
+    Mixing providers will produce incorrect similarity search results.
+    """
+    if provider == "google":
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in .env")
+        print(f"Embedding provider: Google (text-embedding-004, 768-dim)")
+        # output_dimensionality=768 matches the Qdrant collection size
+        return GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=api_key,
+            task_type="retrieval_document",
+        )
+    elif provider == "jina":
+        from langchain_community.embeddings import JinaEmbeddings
+        api_key = os.getenv("JINA_API_KEY")
+        if not api_key:
+            raise ValueError("JINA_API_KEY not found in .env")
+        print(f"Embedding provider: Jina AI cloud (jina-embeddings-v2-base-code)")
+        return JinaEmbeddings(
+            jina_api_key=api_key,
+            model_name="jina-embeddings-v2-base-code",
+        )
+    else:
+        print(f"Embedding provider: Ollama local ({OLLAMA_EMBEDDING_MODEL})")
+        return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
+
 
 # File extensions -> LangChain Language enum
 LANG_MAP = {
@@ -76,7 +113,7 @@ def collect_files(repo_path: str) -> list[Path]:
             files.append(p)
     return files
 
-def ingest(repo_path: str):
+def ingest(repo_path: str, embeddings_provider: str = "ollama"):
     client = QdrantClient(url=QDRANT_URL)
 
     # Create or recreate collection
@@ -90,7 +127,7 @@ def ingest(repo_path: str):
         vectors_config=VectorParams(size=768, distance=Distance.COSINE),
     )
 
-    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings(embeddings_provider)
     files = collect_files(repo_path)
     
     from collections import Counter
@@ -146,6 +183,10 @@ def ingest(repo_path: str):
     print("✓ Ingestion complete.")
 
 if __name__ == "__main__":
-    import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else "."
-    ingest(path)
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest a codebase into Qdrant for auditing.")
+    parser.add_argument("path", nargs="?", default=".", help="Path to the repo (default: current dir)")
+    parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
+                        help="Embedding provider (default: ollama). Must match what agent.py uses!")
+    args = parser.parse_args()
+    ingest(args.path, args.embeddings)

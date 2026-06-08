@@ -1,8 +1,10 @@
 import ast
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
@@ -12,17 +14,60 @@ from qdrant_client import QdrantClient
 
 from prompts import AUDIT_CATEGORIES, DUPLICATE_INSTRUCTION
 
+load_dotenv()  # loads GOOGLE_API_KEY from .env if present
+
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "code_audit"
-EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"
-LLM_MODEL = "qwen3:4b"
+OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"  # local fallback
+OLLAMA_MODEL = "qwen3:4b"
+GEMINI_MODEL = "gemini-2.0-flash-lite"  # free tier on AI Studio
 TOP_K = 3   # chunks retrieved per category (larger chunks = fewer needed)
 
 console = Console()
 
-def get_vectorstore():
+def get_embeddings(provider: str):
+    """Return the appropriate embeddings. Must match the provider used during ingest."""
+    if provider == "google":
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        api_key = os.getenv("GOOGLE_API_KEY")
+        return GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=api_key,
+            task_type="retrieval_query",  # query-side task type
+        )
+    elif provider == "jina":
+        from langchain_community.embeddings import JinaEmbeddings
+        api_key = os.getenv("JINA_API_KEY")
+        return JinaEmbeddings(
+            jina_api_key=api_key,
+            model_name="jina-embeddings-v2-base-code",
+        )
+    else:
+        return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
+
+
+def get_llm(provider: str):
+    """Return the appropriate LangChain LLM based on the chosen provider."""
+    if provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            console.print("[bold red]Error:[/bold red] GOOGLE_API_KEY not found. Add it to your .env file.")
+            raise SystemExit(1)
+        console.print(f"[bold green]Provider:[/bold green] Google Gemini ({GEMINI_MODEL})\n")
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            temperature=0.1,
+            google_api_key=api_key,
+        )
+    else:
+        console.print(f"[bold green]Provider:[/bold green] Ollama ({OLLAMA_MODEL})\n")
+        return OllamaLLM(model=OLLAMA_MODEL, temperature=0.1)
+
+
+def get_vectorstore(embeddings_provider: str = "ollama"):
     client = QdrantClient(url=QDRANT_URL)
-    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings(embeddings_provider)
     return QdrantVectorStore(
         client=client,
         collection_name=COLLECTION_NAME,
@@ -86,11 +131,11 @@ Be specific. Reference file names. If no issues found in this area, say so clear
         "files_sampled": list({d.metadata.get("file", "?") for d in docs}),
     }
 
-def run_audit(output_format: str = "markdown"):
-    llm = OllamaLLM(model=LLM_MODEL, temperature=0.1)
-    vectorstore = get_vectorstore()
+def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
+    llm = get_llm(provider)
+    vectorstore = get_vectorstore(embeddings_provider)
 
-    console.print(f"[bold green]Starting audit with {LLM_MODEL}[/bold green]\n")
+    console.print(f"[bold green]Starting audit...[/bold green]")
     
     results = {}
     with Progress(
@@ -176,6 +221,13 @@ Executive summary:"""
         console.print(f"[bold green]✓ JSON saved to {json_path}[/bold green]")
 
 if __name__ == "__main__":
-    import sys
-    fmt = sys.argv[1] if len(sys.argv) > 1 else "markdown"
-    run_audit(fmt)
+    import argparse
+    parser = argparse.ArgumentParser(description="Run a code audit against an indexed codebase.")
+    parser.add_argument("format", nargs="?", default="markdown", choices=["markdown", "json"],
+                        help="Output format (default: markdown)")
+    parser.add_argument("--provider", default="ollama", choices=["ollama", "gemini"],
+                        help="LLM provider to use (default: ollama)")
+    parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
+                        help="Embedding provider — must match what was used during ingest (default: ollama)")
+    args = parser.parse_args()
+    run_audit(args.format, args.provider, args.embeddings)
