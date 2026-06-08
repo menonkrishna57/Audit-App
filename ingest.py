@@ -12,8 +12,8 @@ from qdrant_client.models import Distance, VectorParams
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "code_audit"
 EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"
-CHUNK_SIZE = 512
-CHUNK_OVERLAP = 64
+CHUNK_SIZE = 1500
+CHUNK_OVERLAP = 150
 
 # File extensions -> LangChain Language enum
 LANG_MAP = {
@@ -41,15 +41,18 @@ def get_splitter(ext: str):
 def collect_files(repo_path: str) -> list[Path]:
     skip_dirs = {
         ".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
-        ".next", ".nuxt", ".cache", "out", "public", ".docusaurus","data","env",
-        "embeddings", "vectors", ".qdrant", "qdrant_storage", ".chroma", ".faiss"
+        ".next", ".nuxt", ".cache", "out", "public", ".docusaurus", "data", "env", ".env",
+        "embeddings", "vectors", ".qdrant", "qdrant_storage", ".chroma", ".faiss",
+        ".vscode", ".idea", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+        # Third-party / vendor code — excluded to prevent polluting audit results
+        "vendor", "lib", "static", "assets", "themes", "bower_components"
     }
     skip_files = {
         "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
-        "embeddings.json", "vectors.json", "embeddings.csv", "vectors.csv"
+        "embeddings.json", "vectors.json", "embeddings.csv", "vectors.csv", ".env"
     }
     extensions = set(LANG_MAP.keys()) | {
-        ".txt", ".md", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".csv", ".tsv", ".xml"
+        ".md", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".csv", ".tsv", ".xml"
     }
     files = []
     for p in Path(repo_path).rglob("*"):
@@ -60,7 +63,7 @@ def collect_files(repo_path: str) -> list[Path]:
         parts = p.parts
         # If the file path contains a "data" directory, bypass soft skip_dirs like "public" or "dist"
         if "data" in parts:
-            forbidden_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+            forbidden_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", "env", ".env"}
             if any(part in forbidden_dirs for part in parts):
                 continue
         else:
@@ -89,7 +92,13 @@ def ingest(repo_path: str):
 
     embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
     files = collect_files(repo_path)
-    print(f"Found {len(files)} files to check.")
+    
+    from collections import Counter
+    ext_counts = Counter(f.suffix for f in files)
+    print(f"\nFound {len(files)} total files. Breakdown:")
+    for ext, count in ext_counts.most_common():
+        print(f"  {ext or 'no-extension'}: {count} files")
+    print()
 
     all_docs = []
     file_chunk_counts = {}
