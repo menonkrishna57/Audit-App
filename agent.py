@@ -1,7 +1,5 @@
-import ast
 import json
 import os
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -64,7 +62,7 @@ def get_llm(provider: str):
     else:
         console.print(f"[bold green]Provider:[/bold green] Ollama ({LLM_MODEL})\n")
         return OllamaLLM(
-            model=LLM_MODEL, 
+            model=LLM_MODEL,
             temperature=0.1,
             num_ctx=2048,  # Hard limit to save KV cache VRAM
         )
@@ -79,25 +77,20 @@ def get_vectorstore(embeddings_provider: str = "ollama"):
         embedding=embeddings,
     )
 
-async def audit_category(llm, vectorstore, category: str, config: dict, progress: Progress, task_id) -> dict:
+def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
+    """Run a single audit report: multi-query RAG retrieval + LLM generation."""
     docs = []
     seen = set()
-    # Execute searches concurrently for all queries in the config
-    
-    def sync_search(query):
-        return vectorstore.similarity_search(query, k=config["top_k"])
-        
-    search_tasks = [asyncio.to_thread(sync_search, q) for q in config["queries"]]
-    results = await asyncio.gather(*search_tasks)
-    
-    for res_list in results:
-        for d in res_list:
+
+    # Run each RAG query and deduplicate results
+    for query in config["queries"]:
+        results = vectorstore.similarity_search(query, k=config["top_k"])
+        for d in results:
             if d.page_content not in seen:
                 seen.add(d.page_content)
                 docs.append(d)
 
     if not docs:
-        progress.advance(task_id)
         return {"category": category, "findings": "No relevant code found.", "chunks_analyzed": 0}
 
     # Build context from retrieved chunks
@@ -112,9 +105,7 @@ async def audit_category(llm, vectorstore, category: str, config: dict, progress
 {config['prompt_template'].replace('{context}', context)}
 """
 
-    response = await llm.ainvoke(prompt)
-    progress.advance(task_id)
-    
+    response = llm.invoke(prompt)
     return {
         "category": category,
         "findings": response,
@@ -122,11 +113,11 @@ async def audit_category(llm, vectorstore, category: str, config: dict, progress
         "files_sampled": list({d.metadata.get("file", "?") for d in docs}),
     }
 
-async def run_audit_async(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
+def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
     llm = get_llm(provider)
     vectorstore = get_vectorstore(embeddings_provider)
 
-    console.print(f"[bold green]Starting async audit...[/bold green]")
+    console.print(f"[bold green]Starting audit...[/bold green]")
     
     results = {}
     with Progress(
@@ -137,18 +128,14 @@ async def run_audit_async(output_format: str = "markdown", provider: str = "olla
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        main_task = progress.add_task("[cyan]Running reports concurrently...", total=len(REPORT_CONFIG) + 1)
+        task = progress.add_task("[cyan]Running reports...", total=len(REPORT_CONFIG) + 1)
         
-        # Dispatch all categories concurrently
-        tasks = []
         for category, config in REPORT_CONFIG.items():
-            tasks.append(audit_category(llm, vectorstore, category, config, progress, main_task))
-            
-        completed_reports = await asyncio.gather(*tasks)
-        for rep in completed_reports:
-            results[rep["category"]] = rep
+            progress.update(task, description=f"[cyan]Generating:[/cyan] {config['title']}")
+            results[category] = audit_category(llm, vectorstore, category, config)
+            progress.advance(task)
 
-        progress.update(main_task, description="[cyan]Generating executive summary...[/cyan]")
+        progress.update(task, description="[cyan]Generating executive summary...[/cyan]")
         
         # Build summary
         summary_input = "\n\n".join(
@@ -162,9 +149,9 @@ that highlights the most critical issues and the overall health of the codebase.
 
 Executive summary:"""
 
-        summary = await llm.ainvoke(summary_prompt)
-        progress.advance(main_task)
-        progress.update(main_task, description="[green]Audit complete![/green]")
+        summary = llm.invoke(summary_prompt)
+        progress.advance(task)
+        progress.update(task, description="[green]Audit complete![/green]")
 
     # Assemble report
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -208,4 +195,4 @@ if __name__ == "__main__":
     parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
                         help="Embedding provider — must match what was used during ingest (default: ollama)")
     args = parser.parse_args()
-    asyncio.run(run_audit_async(args.format, args.provider, args.embeddings))
+    run_audit(args.format, args.provider, args.embeddings)
