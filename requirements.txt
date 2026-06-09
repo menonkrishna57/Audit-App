@@ -9,3 +9,5 @@ gitpython
 rich
 tqdm
 python-dotenv
+streamlit
+requests
