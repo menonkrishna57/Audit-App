@@ -20,9 +20,28 @@ COLLECTION_NAME = "code_audit"
 OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"  # local fallback
 
 LLM_MODEL = "qwen3:4b-q4_K_M"
-GEMINI_MODEL = "gemini-2.0-flash-lite"  # free tier on AI Studio
+GEMINI_MODEL = "gemini-flash-lite-latest"  # free tier on AI Studio
 
 console = Console()
+
+def _extract_text(response) -> str:
+    """Normalize an LLM response to a plain string.
+    
+    ChatGoogleGenerativeAI returns AIMessage objects while OllamaLLM returns
+    plain strings. This helper handles both so downstream code always gets str.
+    """
+    if isinstance(response, str):
+        return response
+    # AIMessage / HumanMessage / BaseMessage
+    if hasattr(response, "content"):
+        content = response.content
+        # content can be a list of dicts (multimodal) or a plain string
+        if isinstance(content, list):
+            return "\n".join(
+                item["text"] for item in content if isinstance(item, dict) and "text" in item
+            )
+        return str(content)
+    return str(response)
 
 def get_embeddings(provider: str):
     """Return the appropriate embeddings. Must match the provider used during ingest."""
@@ -108,7 +127,7 @@ def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
     response = llm.invoke(prompt)
     return {
         "category": category,
-        "findings": response,
+        "findings": _extract_text(response),
         "chunks_analyzed": len(docs),
         "files_sampled": list({d.metadata.get("file", "?") for d in docs}),
     }
@@ -149,7 +168,7 @@ that highlights the most critical issues and the overall health of the codebase.
 
 Executive summary:"""
 
-        summary = llm.invoke(summary_prompt)
+        summary = _extract_text(llm.invoke(summary_prompt))
         progress.advance(task)
         progress.update(task, description="[green]Audit complete![/green]")
 

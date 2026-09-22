@@ -178,9 +178,9 @@ def ingest(repo_path: str, embeddings_provider: str = "ollama"):
     for i in range(0, len(all_docs), batch_size):
         batch = all_docs[i : i + batch_size]
         vector_store.add_documents(batch)
-        print(f"✓ Indexed {min(i + batch_size, len(all_docs))} / {len(all_docs)} chunks...")
+        print(f"[OK] Indexed {min(i + batch_size, len(all_docs))} / {len(all_docs)} chunks...")
 
-    print("✓ Ingestion complete.")
+    print("[OK] Ingestion complete.")
 
 if __name__ == "__main__":
     import argparse
