@@ -12,7 +12,7 @@ import json
 from prompts import REPORT_CONFIG
 from agent import get_llm, get_vectorstore, audit_category, audit_and_remediate, GEMINI_MODEL
 from ingest import ingest
-from remediation import GitManager, Finding, RemediationPatch, RemediationResult
+from remediation import GitManager, Finding, RemediationPatch, RemediationResult, AuditReport
 
 # --- Page Configuration & Design System ---
 st.set_page_config(
@@ -307,7 +307,7 @@ with tab3:
 
     # Render Remediation Findings and Patches
     if "remediation_report" in st.session_state:
-        report: AuditReport = st.session_state["remediation_report"]
+        report = st.session_state["remediation_report"]
 
         st.markdown(f"**Summary:** {report.summary}")
 
@@ -413,7 +413,7 @@ with tab3:
 
     # Post-Commit Result and Rollback Box
     if "last_commit_result" in st.session_state:
-        res: RemediationResult = st.session_state["last_commit_result"]
+        res = st.session_state["last_commit_result"]
         st.markdown("---")
         st.success(f"Successfully remediated vulnerabilities on branch **`{res.branch_name}`** (Commit: `{res.commit_hash}`)")
 
