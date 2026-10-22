@@ -35,8 +35,14 @@ if __name__ == "__main__":
 
         print(f"Created test repository at: {temp_dir}")
 
+        import subprocess
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(temp_dir), check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=str(temp_dir), check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(temp_dir), check=True)
+        subprocess.run(["git", "add", "."], cwd=str(temp_dir), check=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=str(temp_dir), check=True)
+
         git = GitManager(str(temp_dir))
-        git.init_git_repo_if_needed()
         original_branch = git.get_current_branch()
         print(f"Initial Git branch: {original_branch}")
 
