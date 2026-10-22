@@ -1,41 +1,76 @@
-# Running the Code Audit Tool
+# Code Audit & Remediation Platform
 
 ## Prerequisites
-- Ensure Qdrant is running locally (e.g., `docker run -p 6333:6333 qdrant/qdrant`).
-- If using Google Gemini or Jina AI for embeddings/LLM, ensure your `.env` file contains `GOOGLE_API_KEY` or `JINA_API_KEY`.
+- **Python Virtual Environment**: Use `.venv` (`.\.venv\Scripts\Activate.ps1`).
+- **Gemini API**: Ensure `GOOGLE_API_KEY` or `GEMINI_API_KEY` is in your `.env` file (runs `gemini-3.8-flash` via `google-genai`).
+- **Qdrant Vector Database**: Optional for semantic vector search (`docker run -p 6333:6333 qdrant/qdrant`).
 
-## 1. Index your repo (run once, or re-run when code changes)
-The indexing step chunks your codebase and stores it in Qdrant. You must specify an embeddings provider (`ollama` by default).
+---
+
+## 1. Interactive Streamlit Dashboard
+Launch the unified audit and remediation dashboard:
 
 ```powershell
-# Default: Uses local Ollama for embeddings
-python ingest.py /path/to/your/repo
-
-# Cloud: Uses Google or Jina for embeddings (Requires API Keys)
-python ingest.py /path/to/your/repo --embeddings google
-python ingest.py /path/to/your/repo --embeddings jina
+.\.venv\Scripts\streamlit run app.py
 ```
 
-**⚠️ Critical Rule:** The `--embeddings` provider you choose here MUST be the exact same one you use for `agent.py`.
+### Dashboard Capabilities:
+- **Tab 1: Ingestion & Indexing**: Select repo path and index code into Qdrant.
+- **Tab 2: Audit Reports**: Run SBOM, CBOM, RCA, and OWASP Gap Analysis reports powered by `gemini-3.8-flash`.
+- **Tab 3: Remediation & Fixes (1-Click Apply)**:
+  - Detects hardcoded secrets, API keys, credentials, and code flaws.
+  - Generates unified diffs (`os.getenv(...)` replacement, `.env` entries, `requirements.txt` updates).
+  - Isolates fixes on a dedicated Git branch (e.g., `audit-fixes-20261022_160000`).
+  - Includes a 1-click **Rollback to Original Branch** button.
 
-## 2. Run the audit
-The agent runs a high-performance asynchronous pipeline to generate SBOM, CBOM, RCA, and Gap Analysis reports. 
+---
+
+## 2. Headless CLI & Jenkins CI/CD Automation
+
+Run automated audit and remediation checks directly in CI/CD pipelines (Jenkins, GitHub Actions):
 
 ```powershell
-# Default: Uses Ollama for LLM and Ollama for embeddings
-python agent.py
+# Standard run with Gemini 3.8 Flash
+.\.venv\Scripts\python agent.py --provider gemini
 
-# Fully Free Cloud: Gemini for LLM + Google for embeddings
-python agent.py --provider gemini --embeddings google
-
-# Mix: Gemini for LLM + Jina for embeddings
-python agent.py --provider gemini --embeddings jina
+# Headless CI mode for Jenkins: exits with code 1 if CRITICAL vulnerabilities exist
+.\.venv\Scripts\python agent.py --ci --provider gemini --fail-on CRITICAL --target .
 ```
 
-## 3. Output Formats
-By default, the report is saved as a Markdown file in the `reports/` directory. You can optionally export it in a structured JSON format.
+### Jenkinsfile Pipeline Example:
+```groovy
+pipeline {
+    agent any
+    stages {
+        stage('Security Audit & Remediation Check') {
+            steps {
+                sh '.venv/bin/python agent.py --ci --provider gemini --fail-on CRITICAL --target .'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/*.json, reports/*.md', fingerprint: true
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3. Ingestion & Vector Search (Optional)
 
 ```powershell
-# Outputs BOTH Markdown and JSON formats
-python agent.py json --provider gemini --embeddings google
+# Index codebase chunks into Qdrant
+.\.venv\Scripts\python ingest.py /path/to/repo --embeddings google
+```
+
+---
+
+## 4. Running Verification Tests
+
+Run the remediation test suite to verify secret extraction, `.env` injection, and Git isolation:
+
+```powershell
+.\.venv\Scripts\python tests/test_remediation.py
 ```

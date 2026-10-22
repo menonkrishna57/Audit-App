@@ -11,3 +11,4 @@ tqdm
 python-dotenv
 streamlit
 requests
+google-genai>=2.8.0
