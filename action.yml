@@ -1,0 +1,44 @@
+name: "Audit-App Security Pipeline"
+description: "Generates SBOM (Software Bill of Materials) and CBOM (Cryptography Bill of Materials) security reports for any repository."
+author: "menonkrishna57"
+
+inputs:
+  target-path:
+    description: "Path to repository to audit"
+    required: false
+    default: "."
+  google-api-key:
+    description: "Google Gemini API key for AI RAG audit"
+    required: false
+    default: ""
+  fail-on-critical:
+    description: "Fail the workflow if CRITICAL security findings are discovered (true/false)"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: "pip"
+
+    - name: Install Audit-App Dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r ${{ github.action_path }}/requirements.txt
+
+    - name: Run SBOM & CBOM Security Audit
+      shell: bash
+      env:
+        GOOGLE_API_KEY: ${{ inputs.google-api-key }}
+        QDRANT_URL: "http://localhost:6333"
+      run: |
+        CRIT_FLAG=""
+        if [ "${{ inputs.fail-on-critical }}" = "true" ]; then
+          CRIT_FLAG="--fail-on-critical"
+        fi
+        python ${{ github.action_path }}/ci_security_audit.py "${{ inputs.target-path }}" $CRIT_FLAG

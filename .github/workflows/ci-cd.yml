@@ -59,6 +59,8 @@ jobs:
           QDRANT_URL: "http://localhost:6333"
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          GEMINI_MODEL: "gemini-3.5-flash-lite"
+          GOOGLE_EMBEDDING_MODEL: "gemini-embedding-001"
         run: |
           python ci_security_audit.py
 

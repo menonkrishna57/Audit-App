@@ -34,6 +34,7 @@ load_dotenv()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")
+GOOGLE_EMBEDDING_MODEL = os.getenv("GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 
@@ -49,11 +50,12 @@ def get_embeddings(provider: str):
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment or .env")
-        print("Embedding provider: Google (text-embedding-004, 768-dim)")
+        print(f"Embedding provider: Google ({GOOGLE_EMBEDDING_MODEL}, 768-dim)")
         # output_dimensionality=768 matches the Qdrant collection size
         return GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model=GOOGLE_EMBEDDING_MODEL,
             google_api_key=api_key,
+            output_dimensionality=768,
             task_type="retrieval_document",
         )
     elif provider == "jina":

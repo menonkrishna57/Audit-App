@@ -4,7 +4,7 @@ ci_security_audit.py
 ─────────────────────────────────────────────────────────────────────────────
 CI/CD Security Audit Runner for Audit-App.
 Executes SBOM (Software Bill of Materials) and CBOM (Cryptography Bill of Materials)
-measures as defined by Audit-App.
+measures as defined by Audit-App against ANY target repository.
 
 Modes:
 - AI-Powered RAG Mode: Used when GOOGLE_API_KEY is available and Qdrant is online.
@@ -279,10 +279,11 @@ def extract_cbom_deterministic(repo_path: Path) -> dict:
 # MAIN EXECUTION ROUTINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") -> int:
-    repo_path = Path(".").resolve()
+def run_ci_audit(target_path: str = ".", fail_on_critical: bool = False, output_dir: str = "reports") -> int:
+    repo_path = Path(target_path).resolve()
     print("=" * 70)
-    print("[Audit-App] CI/CD Security Audit Pipeline (SBOM & CBOM)")
+    print(f"[Audit-App] CI/CD Security Audit Pipeline (SBOM & CBOM)")
+    print(f"Target Repository: {repo_path}")
     print("=" * 70)
 
     google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -297,8 +298,9 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
     out_dir.mkdir(parents=True, exist_ok=True)
 
     report_content = []
-    report_content.append("# Audit-App Security Audit Report")
+    report_content.append(f"# Audit-App Security Audit Report: `{repo_path.name}`")
     report_content.append(f"_Generated on: {timestamp} (UTC)_  ")
+    report_content.append(f"_Audited Repository: `{repo_path}`_  ")
     report_content.append(f"_Execution Engine: {'AI-Powered RAG (Gemini + Qdrant)' if use_ai_rag else 'Deterministic Codebase Static Extractor'}_  \n")
 
     if use_ai_rag:
@@ -307,7 +309,7 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
         try:
             from ingest import ingest
             from agent import run_audit
-            print("\n[Step 1/2] Ingesting repository into Qdrant...")
+            print(f"\n[Step 1/2] Ingesting repository '{repo_path}' into Qdrant...")
             ingest(str(repo_path), embeddings_provider="google")
             print("\n[Step 2/2] Generating SBOM & CBOM audit reports...")
             run_audit(
@@ -325,7 +327,7 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
             print("Falling back to Deterministic Codebase Extraction to ensure CI audit continuity...")
 
     # Deterministic Extraction Mode
-    print("\n[OK] Running Deterministic SBOM and CBOM security measures...")
+    print(f"\n[OK] Running Deterministic SBOM and CBOM security measures on '{repo_path}'...")
     sbom_data = extract_sbom_deterministic(repo_path)
     cbom_data = extract_cbom_deterministic(repo_path)
 
@@ -333,7 +335,7 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
     report_content.append("## Executive Summary")
     report_content.append(
         f"This security audit evaluated **{sbom_data['total']} software components** and "
-        f"**{cbom_data['total']} cryptographic primitives** within the codebase. "
+        f"**{cbom_data['total']} cryptographic primitives** within `{repo_path.name}`. "
         f"Cryptographic posture is evaluated as **{cbom_data['posture']}**.\n"
     )
 
@@ -362,6 +364,7 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump({
             "generated_at": timestamp,
+            "target_repository": str(repo_path),
             "engine": "deterministic_extractor",
             "sbom": sbom_data,
             "cbom": cbom_data
@@ -383,7 +386,8 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
     # Print summary to console
     print("\n" + "=" * 70)
     print("AUDIT SUMMARY:")
-    print(f"Dependencies (SBOM): {sbom_data['total']} detected")
+    print(f"Target Repo:          {repo_path.name}")
+    print(f"Dependencies (SBOM):  {sbom_data['total']} detected")
     print(f"Crypto Assets (CBOM): {cbom_data['total']} detected")
     print(f"Crypto Posture:       {cbom_data['posture']}")
     print("=" * 70)
@@ -403,8 +407,9 @@ def run_ci_audit(fail_on_critical: bool = False, output_dir: str = "reports") ->
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Audit-App CI Security Pipeline (SBOM & CBOM)")
+    parser.add_argument("path", nargs="?", default=".", help="Path to repo to audit (default: current dir)")
     parser.add_argument("--fail-on-critical", action="store_true", help="Exit with code 1 on CRITICAL findings")
     parser.add_argument("--output-dir", default="reports", help="Directory for reports (default: reports)")
     args = parser.parse_args()
 
-    sys.exit(run_ci_audit(fail_on_critical=args.fail_on_critical, output_dir=args.output_dir))
+    sys.exit(run_ci_audit(target_path=args.path, fail_on_critical=args.fail_on_critical, output_dir=args.output_dir))

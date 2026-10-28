@@ -28,11 +28,40 @@ load_dotenv()  # loads GOOGLE_API_KEY from .env if present
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")  # local fallback
+GOOGLE_EMBEDDING_MODEL = os.getenv("GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001")
 
 LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "qwen3:4b-q4_K_M")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")  # free tier on AI Studio
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+SUPPORTED_GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-pro",
+]
 
 console = Console()
+
+def extract_text_content(res) -> str:
+    """Extract clean string text from LLM response (handling string, list of dicts, or AIMessage)."""
+    if res is None:
+        return ""
+    content = getattr(res, "content", res)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and "text" in part:
+                parts.append(str(part["text"]))
+            elif hasattr(part, "text"):
+                parts.append(str(part.text))
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    return str(content)
 
 def get_embeddings(provider: str):
     """Return the appropriate embeddings. Must match the provider used during ingest."""
@@ -42,8 +71,9 @@ def get_embeddings(provider: str):
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment or .env")
         return GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model=GOOGLE_EMBEDDING_MODEL,
             google_api_key=api_key,
+            output_dimensionality=768,
             task_type="retrieval_query",  # query-side task type
         )
     elif provider == "jina":
@@ -61,7 +91,7 @@ def get_embeddings(provider: str):
         return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
 
 
-def get_llm(provider: str):
+def get_llm(provider: str, model_name: str = None):
     """Return the appropriate LangChain LLM based on the chosen provider."""
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -69,18 +99,20 @@ def get_llm(provider: str):
         if not api_key:
             console.print("[bold red]Error:[/bold red] GOOGLE_API_KEY not found. Add it to your .env file or environment.")
             raise SystemExit(1)
-        console.print(f"[bold green]Provider:[/bold green] Google Gemini ({GEMINI_MODEL})\n")
+        selected_model = model_name or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+        console.print(f"[bold green]Provider:[/bold green] Google Gemini ({selected_model})\n")
         return ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
+            model=selected_model,
             temperature=0.1,
             google_api_key=api_key,
         )
     else:
         if OllamaLLM is None:
             raise ImportError("langchain-ollama is required for Ollama LLM. Please install with 'pip install langchain-ollama'")
-        console.print(f"[bold green]Provider:[/bold green] Ollama ({LLM_MODEL})\n")
+        selected_model = model_name or LLM_MODEL
+        console.print(f"[bold green]Provider:[/bold green] Ollama ({selected_model})\n")
         return OllamaLLM(
-            model=LLM_MODEL,
+            model=selected_model,
             temperature=0.1,
             num_ctx=2048,  # Hard limit to save KV cache VRAM
         )
@@ -126,7 +158,7 @@ def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
 """
 
     response = llm.invoke(prompt)
-    findings_text = response.content if hasattr(response, "content") else str(response)
+    findings_text = extract_text_content(response)
 
     return {
         "category": category,
@@ -141,7 +173,8 @@ def run_audit(
     embeddings_provider: str = "ollama",
     categories: list = None,
     output_dir: str = "reports",
-    fail_on_critical: bool = False
+    fail_on_critical: bool = False,
+    model: str = None
 ):
     target_configs = {
         k: v for k, v in REPORT_CONFIG.items()
@@ -152,7 +185,7 @@ def run_audit(
         console.print("[bold red]Error: No valid categories selected.[/bold red]")
         return
 
-    llm = get_llm(provider)
+    llm = get_llm(provider, model_name=model)
     vectorstore = get_vectorstore(embeddings_provider)
 
     console.print(f"[bold green]Starting audit ({', '.join(target_configs.keys())})...[/bold green]")
@@ -188,7 +221,7 @@ that highlights the most critical issues and the overall health of the codebase.
 Executive summary:"""
 
         summary_res = llm.invoke(summary_prompt)
-        summary = summary_res.content if hasattr(summary_res, "content") else str(summary_res)
+        summary = extract_text_content(summary_res)
 
         progress.advance(task)
         progress.update(task, description="[green]Audit complete![/green]")
@@ -199,17 +232,17 @@ Executive summary:"""
         "# Internal Code Audit Report",
         f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n",
         "## Executive Summary",
-        summary,
+        str(summary),
         "---",
     ]
     for r in results.values():
         report_lines += [
             f"\n## {r['category'].replace('_', ' ').title()}",
             f"_Chunks analyzed: {r['chunks_analyzed']} | Files sampled: {len(r.get('files_sampled', []))}_\n",
-            r["findings"],
+            str(r["findings"]),
         ]
 
-    report_md = "\n".join(report_lines)
+    report_md = "\n".join(str(line) for line in report_lines)
 
     # Save
     out_dir_path = Path(output_dir)
@@ -250,6 +283,8 @@ if __name__ == "__main__":
                         help="Output format (default: markdown)")
     parser.add_argument("--provider", default="ollama", choices=["ollama", "gemini"],
                         help="LLM provider to use (default: ollama)")
+    parser.add_argument("--model", default=None,
+                        help="Specific model to use (e.g. gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash)")
     parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
                         help="Embedding provider — must match what was used during ingest (default: ollama)")
     parser.add_argument("--categories", nargs="+", choices=list(REPORT_CONFIG.keys()), default=list(REPORT_CONFIG.keys()),
@@ -265,5 +300,6 @@ if __name__ == "__main__":
         embeddings_provider=args.embeddings,
         categories=args.categories,
         output_dir=args.output_dir,
-        fail_on_critical=args.fail_on_critical
+        fail_on_critical=args.fail_on_critical,
+        model=args.model
     )

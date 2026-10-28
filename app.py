@@ -6,6 +6,9 @@ from datetime import datetime
 from pathlib import Path
 import json
 
+from dotenv import load_dotenv
+load_dotenv()
+
 try:
     import tkinter as tk
     from tkinter import filedialog
@@ -14,13 +17,18 @@ except Exception:
     HAS_TKINTER = False
 
 from prompts import REPORT_CONFIG
-from agent import get_llm, get_vectorstore, audit_category
+from agent import get_llm, get_vectorstore, audit_category, run_audit, extract_text_content
 from ingest import ingest
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Audit App Dashboard", layout="wide", page_icon="🛡️")
+st.set_page_config(
+    page_title="Audit-App | Security & Compliance Dashboard",
+    layout="wide",
+    page_icon="🛡️"
+)
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+HAS_GOOGLE_KEY = bool(os.getenv("GOOGLE_API_KEY"))
 
 # --- Helper Functions ---
 def check_qdrant_status():
@@ -44,54 +52,86 @@ def select_folder():
     except Exception:
         return ""
 
+def list_past_reports():
+    reports_dir = Path("reports")
+    if not reports_dir.exists():
+        return []
+    return sorted(list(reports_dir.glob("*.md")), key=lambda p: p.stat().st_mtime, reverse=True)
+
 # --- Sidebar Configuration ---
-st.sidebar.title("⚙️ Settings")
+st.sidebar.image("https://img.shields.io/badge/Security-Audit_App-blue?style=for-the-badge&logo=shield", use_container_width=True)
+st.sidebar.title("⚙️ System Settings")
 
 # Qdrant Status
 is_qdrant_online = check_qdrant_status()
 if is_qdrant_online:
-    st.sidebar.success("🟢 Qdrant Database: Online")
+    st.sidebar.success("🟢 Qdrant Database: Online (port 6333)")
 else:
     st.sidebar.error("🔴 Qdrant Database: Offline")
+    st.sidebar.caption("Run `docker run -d -p 6333:6333 qdrant/qdrant` to start it.")
 
-# Embedding Model Selector
-st.sidebar.subheader("Models")
+# API Key Status
+if HAS_GOOGLE_KEY:
+    st.sidebar.success("🔑 Google API Key: Configured")
+else:
+    st.sidebar.warning("⚠️ Google API Key: Missing from .env")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Model Configuration")
+
+# Embedding Model Selector (smart default based on available keys)
+default_emb_idx = 1 if HAS_GOOGLE_KEY else 0
 embedding_provider = st.sidebar.selectbox(
-    "Embedding Model",
+    "Embedding Provider",
     options=["ollama", "google", "jina"],
-    index=0,
-    help="Must match the provider used during ingestion."
+    index=default_emb_idx,
+    help="Must match the provider used during repository ingestion."
 )
 
 # Querying Model Selector
+default_query_idx = 1 if HAS_GOOGLE_KEY else 0
 query_provider = st.sidebar.selectbox(
-    "Querying Model",
+    "Querying LLM Provider",
     options=["ollama", "gemini"],
-    index=0,
+    index=default_query_idx,
     help="LLM provider for generating reports."
 )
 
+gemini_model = None
+if query_provider == "gemini":
+    gemini_model = st.sidebar.selectbox(
+        "Gemini Model",
+        options=[
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3.5-pro",
+        ],
+        index=0,
+        help="Select Gemini model version. (3.5-flash recommended; 3.5-flash-lite for fastest speed)."
+    )
+
 st.sidebar.markdown("---")
-st.sidebar.info("Make sure to restart ingestion if you change the Embedding Model!")
+st.sidebar.info("💡 **Tip:** Always use the same Embedding Provider for both Ingestion and Reports.")
 
 # --- Main Layout ---
-st.title("🛡️ Code Audit Dashboard")
+st.title("🛡️ Code Audit & Security Compliance Dashboard")
+st.caption("AI-driven code repository security auditing: SBOM, CBOM, Root Cause Analysis, and OWASP Gap Analysis.")
 
-tab1, tab2 = st.tabs(["📁 Ingest Codebase", "📄 Run Reports"])
+tab1, tab2, tab3 = st.tabs(["📁 1. Ingest Codebase", "🔍 2. Run Security Audits", "📊 3. Past Audit Reports"])
 
 # --- Tab 1: Ingest Codebase ---
 with tab1:
-    st.header("Ingest Codebase into Qdrant")
-    
-    st.markdown("Select a folder or enter the path manually below.")
+    st.header("Index Codebase into Qdrant")
+    st.markdown("Chunks source files and generates vector embeddings stored in Qdrant for semantic RAG auditing.")
     
     col1, col2 = st.columns([3, 1])
     
     if HAS_TKINTER and os.name == 'nt':
         with col2:
-            st.write("") # Spacing
             st.write("")
-            if st.button("📂 Browse Folder (Windows)"):
+            st.write("")
+            if st.button("📂 Browse Folder"):
                 folder_path = select_folder()
                 if folder_path:
                     st.session_state["repo_path"] = folder_path
@@ -101,82 +141,141 @@ with tab1:
         repo_path = st.text_input(
             "Codebase Path", 
             value=st.session_state.get("repo_path", "."),
-            help="Path to the repository you want to audit."
+            help="Path to the repository you want to audit (default: current directory)."
         )
-        # Update session state if user types manually
         st.session_state["repo_path"] = repo_path
 
-    if st.button("🚀 Start Ingestion", type="primary"):
+    if st.button("🚀 Start Repository Ingestion", type="primary", use_container_width=True):
         if not is_qdrant_online:
-            st.error("Cannot ingest: Qdrant is offline. Please start your Qdrant container.")
+            st.error("Cannot ingest: Qdrant vector database is offline. Please start Qdrant container.")
         else:
-            with st.status("Ingesting codebase... This might take a while.", expanded=True) as status:
-                st.write(f"Target path: `{repo_path}`")
+            with st.status("Ingesting codebase into Qdrant...", expanded=True) as status:
+                st.write(f"Target repository: `{Path(repo_path).resolve()}`")
                 st.write(f"Embedding Provider: `{embedding_provider}`")
-                st.write("Check your terminal for detailed progress output.")
                 try:
                     ingest(repo_path, embedding_provider)
-                    status.update(label="✅ Ingestion complete!", state="complete", expanded=False)
-                    st.success("Codebase successfully ingested and indexed!")
+                    status.update(label="✅ Ingestion completed successfully!", state="complete", expanded=False)
+                    st.success("Codebase successfully vectorized and indexed into Qdrant collection!")
                 except Exception as e:
                     status.update(label="❌ Ingestion failed", state="error", expanded=True)
                     st.error(f"Error during ingestion: {e}")
 
 # --- Tab 2: Run Reports ---
 with tab2:
-    st.header("Run Audit Reports")
+    st.header("Execute Security Audits")
     
     if not is_qdrant_online:
-        st.warning("⚠️ Qdrant is offline. Reports might fail if they require vector search.")
+        st.warning("⚠️ Qdrant is currently offline. Reports require vector database connectivity.")
 
-    st.markdown("Select a report category below to run an audit using the ingested codebase.")
+    # High-level Quick Action
+    st.subheader("⚡ Quick Action: Full Pipeline Audit")
+    col_full, col_empty = st.columns([2, 3])
+    with col_full:
+        if st.button("🛡️ Run Full SBOM & CBOM Audit + Executive Summary", type="primary", use_container_width=True):
+            with st.spinner("Executing full security audit pipeline with Gemini..."):
+                try:
+                    run_audit(
+                        output_format="markdown",
+                        provider=query_provider,
+                        embeddings_provider=embedding_provider,
+                        categories=["sbom", "cbom"],
+                        output_dir="reports",
+                        model=gemini_model
+                    )
+                    st.success("✅ Full security audit completed and report saved!")
+                    st.info("Check **Tab 3: Past Audit Reports** to view and download the generated report.")
+                except Exception as e:
+                    st.error(f"Error during audit run: {e}")
+
+    st.markdown("---")
+    st.subheader("🔎 Individual Category Audit")
     
-    # Create a grid of buttons for reports
     categories = list(REPORT_CONFIG.keys())
+    selected_report = st.selectbox(
+        "Select Specific Audit Category",
+        options=categories,
+        format_func=lambda x: f"{REPORT_CONFIG[x]['title']} — {REPORT_CONFIG[x]['description']}"
+    )
     
-    selected_report = st.selectbox("Select Report to Run", options=categories, format_func=lambda x: REPORT_CONFIG[x]['title'])
-    
-    if st.button(f"🔍 Run {REPORT_CONFIG[selected_report]['title']}", type="primary"):
-        with st.spinner(f"Running {selected_report} report..."):
+    if st.button(f"🔍 Run {REPORT_CONFIG[selected_report]['title']}"):
+        with st.spinner(f"Generating {REPORT_CONFIG[selected_report]['title']}..."):
             try:
-                # Initialize models
-                llm = get_llm(query_provider)
+                llm = get_llm(query_provider, model_name=gemini_model)
                 vectorstore = get_vectorstore(embedding_provider)
                 
-                # Run the audit
                 config = REPORT_CONFIG[selected_report]
                 result = audit_category(llm, vectorstore, selected_report, config)
                 
-                # Store result in session state to persist across reruns
                 st.session_state["last_report_result"] = result
                 st.session_state["last_report_title"] = config['title']
+                st.session_state["last_report_key"] = selected_report
                 
             except Exception as e:
-                st.error(f"Error running report: {e}")
+                st.error(f"Error running category audit: {e}")
 
     # Display results if available
     if "last_report_result" in st.session_state:
         result = st.session_state["last_report_result"]
         title = st.session_state["last_report_title"]
+        category_key = st.session_state.get("last_report_key", "audit")
         
         st.markdown("---")
         st.subheader(f"Results: {title}")
         
         st.info(f"**Chunks Analyzed:** {result['chunks_analyzed']} | **Files Sampled:** {len(result.get('files_sampled', []))}")
         
-        # Add a save button
-        col_save, _ = st.columns([1, 4])
-        with col_save:
-            if st.button("💾 Save Report to Disk"):
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-                report_md = f"# Internal Code Audit Report: {title}\n_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n"
-                report_md += f"_Chunks analyzed: {result['chunks_analyzed']} | Files sampled: {len(result.get('files_sampled', []))}_\n\n"
-                report_md += result['findings']
-                
-                Path("reports").mkdir(exist_ok=True)
-                out_path = f"reports/audit_{selected_report}_{timestamp}.md"
-                Path(out_path).write_text(report_md, encoding="utf-8")
-                st.success(f"Report saved to `{out_path}`")
-                
+        findings_str = extract_text_content(result.get("findings", ""))
+        
+        # Download / Save actions
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        report_md = f"# Internal Code Audit Report: {title}\n_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n"
+        report_md += f"_Chunks analyzed: {result['chunks_analyzed']} | Files sampled: {len(result.get('files_sampled', []))}_\n\n"
+        report_md += findings_str
+        
+        col_dl1, col_dl2 = st.columns([1, 1])
+        with col_dl1:
+            st.download_button(
+                label="📥 Download Report (.md)",
+                data=report_md,
+                file_name=f"audit_{category_key}_{timestamp}.md",
+                mime="text/markdown"
+            )
+        with col_dl2:
+            st.download_button(
+                label="📥 Download JSON (.json)",
+                data=json.dumps(result, indent=2),
+                file_name=f"audit_{category_key}_{timestamp}.json",
+                mime="application/json"
+            )
+            
         with st.container(border=True):
-            st.markdown(result["findings"])
+            st.markdown(findings_str)
+
+# --- Tab 3: Past Audit Reports ---
+with tab3:
+    st.header("Historical Audit Reports")
+    st.markdown("Review and download previously generated code security audit reports stored in `reports/`.")
+    
+    past_reports = list_past_reports()
+    if not past_reports:
+        st.info("No past audit reports found in `reports/`. Run an audit in Tab 2 to generate your first report!")
+    else:
+        selected_file = st.selectbox(
+            "Select Report to View",
+            options=past_reports,
+            format_func=lambda p: f"📄 {p.name} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(p.stat().st_mtime))})"
+        )
+        
+        if selected_file and selected_file.exists():
+            report_text = selected_file.read_text(encoding="utf-8", errors="ignore")
+            
+            st.download_button(
+                label=f"📥 Download {selected_file.name}",
+                data=report_text,
+                file_name=selected_file.name,
+                mime="text/markdown"
+            )
+            
+            st.markdown("---")
+            with st.container(border=True):
+                st.markdown(report_text)
