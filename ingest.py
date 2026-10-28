@@ -267,17 +267,41 @@ def ingest(repo_path: str, embeddings_provider: str = "ollama"):
                 text = raw_text
 
             splitter = get_splitter(fpath.suffix.lower())
-            chunks = splitter.create_documents(
-                texts=[text],
-                metadatas=[{
-                    "file": str(fpath.relative_to(repo_path)),
-                    "ext": fpath.suffix,
-                    "chunk_hash": hashlib.md5(text.encode()).hexdigest()[:8],
-                }]
-            )
-            all_docs.extend(chunks)
-            if chunks:
-                file_chunk_counts[str(fpath.relative_to(repo_path))] = len(chunks)
+            raw_chunk_texts = splitter.split_text(text)
+            rel_file_str = str(fpath.relative_to(repo_path))
+            file_chunks = []
+
+            from langchain_core.documents import Document
+            search_offset = 0
+            for c_text in raw_chunk_texts:
+                if not c_text.strip():
+                    continue
+                c_idx = text.find(c_text, search_offset)
+                if c_idx == -1:
+                    c_idx = text.find(c_text)
+                if c_idx != -1:
+                    start_line = text[:c_idx].count("\n") + 1
+                    end_line = start_line + c_text.count("\n")
+                    search_offset = c_idx + len(c_text)
+                else:
+                    start_line = 1
+                    end_line = 1 + c_text.count("\n")
+
+                doc = Document(
+                    page_content=c_text,
+                    metadata={
+                        "file": rel_file_str,
+                        "ext": fpath.suffix,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "chunk_hash": hashlib.md5(c_text.encode()).hexdigest()[:8],
+                    }
+                )
+                file_chunks.append(doc)
+
+            all_docs.extend(file_chunks)
+            if file_chunks:
+                file_chunk_counts[rel_file_str] = len(file_chunks)
         except Exception as e:
             print(f"Skipped {fpath}: {e}")
 

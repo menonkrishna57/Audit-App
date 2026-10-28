@@ -189,11 +189,14 @@ def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
     if not docs:
         return {"category": category, "findings": "No relevant code found.", "chunks_analyzed": 0}
 
-    # Build context from retrieved chunks
+    # Build context from retrieved chunks with file and line range headers
     context_parts = []
     for i, doc in enumerate(docs):
         file_ref = doc.metadata.get("file", "unknown")
-        context_parts.append(f"--- Chunk {i+1} | File: {file_ref} ---\n{doc.page_content}")
+        start_line = doc.metadata.get("start_line")
+        end_line = doc.metadata.get("end_line")
+        line_info = f" (Lines {start_line}-{end_line})" if (start_line and end_line) else ""
+        context_parts.append(f"--- Chunk {i+1} | File: {file_ref}{line_info} ---\n{doc.page_content}")
     context = "\n\n".join(context_parts)
 
     prompt = f"""{SYSTEM_PROMPT}

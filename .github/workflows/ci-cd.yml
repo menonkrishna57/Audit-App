@@ -18,10 +18,11 @@ concurrency:
 
 jobs:
   # ============================================================================
-  # Continuous Integration (CI): Tests & Audit-App Security Measures (SBOM & CBOM)
+  # Continuous Integration (CI): Tests & Complete Audit-App Security Measures
+  # Covers: SBOM, CBOM, RCA (with code fixes), and CWE/OWASP Gap Analysis
   # ============================================================================
   security-audit-and-test:
-    name: Security Audit (SBOM & CBOM) & Tests
+    name: Complete Security Audit (SBOM, CBOM, RCA, CWE) & Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -54,7 +55,7 @@ jobs:
             sleep 1
           done
 
-      - name: Run Audit-App Security Measures (SBOM & CBOM)
+      - name: Run Audit-App Security Measures (SBOM, CBOM, RCA, CWE Gap Analysis)
         env:
           QDRANT_URL: "http://localhost:6333"
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}

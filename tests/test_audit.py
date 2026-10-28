@@ -8,9 +8,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from prompts import REPORT_CONFIG, SYSTEM_PROMPT, SBOM_PROMPT, CBOM_PROMPT
+from prompts import REPORT_CONFIG, SYSTEM_PROMPT, SBOM_PROMPT, CBOM_PROMPT, RCA_PROMPT, GAP_ANALYSIS_PROMPT
 from ingest import collect_files, LANG_MAP
-from ci_security_audit import extract_sbom_deterministic, extract_cbom_deterministic, run_ci_audit
+from ci_security_audit import (
+    extract_sbom_deterministic,
+    extract_cbom_deterministic,
+    extract_rca_deterministic,
+    extract_cwe_gap_deterministic,
+    run_ci_audit
+)
 
 def test_prompts_configuration():
     """Verify REPORT_CONFIG contains all expected audit categories with valid prompts."""
@@ -65,7 +71,7 @@ def test_deterministic_sbom_extraction():
     assert "qdrant-client" in component_names
 
 def test_deterministic_cbom_extraction():
-    """Verify deterministic CBOM extraction detects crypto primitives in code."""
+    """Verify deterministic CBOM extraction detects crypto primitives and line numbers."""
     repo_path = Path(__file__).resolve().parent.parent
     cbom = extract_cbom_deterministic(repo_path)
 
@@ -76,25 +82,75 @@ def test_deterministic_cbom_extraction():
     assert "| Asset | Algorithm / Primitive |" in cbom["table"]
 
     asset_names = [a["asset"] for a in cbom["items"]]
-    # ingest.py uses MD5 and Cosine similarity
     assert "MD5" in asset_names or "Cosine Similarity" in asset_names
 
+    # Check that items have line references
+    for item in cbom["items"]:
+        assert "line" in item
+        assert isinstance(item["line"], int)
+        assert item["line"] > 0
+
+def test_deterministic_rca_extraction():
+    """Verify deterministic RCA identifies root-cause patterns with file, line, and code fixes."""
+    repo_path = Path(__file__).resolve().parent.parent
+    rca = extract_rca_deterministic(repo_path)
+
+    assert rca["category"] == "rca"
+    assert "markdown" in rca
+    assert "summary" in rca
+    assert "findings" in rca
+
+    # Each finding must include file, line, problem, and recommended code fix
+    for f in rca["findings"]:
+        assert "file" in f
+        assert "line" in f
+        assert "problem" in f
+        assert "recommended_fix" in f
+        assert "vulnerable_code" in f
+        assert len(f["recommended_fix"]) > 0
+
+def test_deterministic_cwe_gap_extraction():
+    """Verify deterministic CWE & OWASP Gap Analysis maps vulnerabilities with code fixes."""
+    repo_path = Path(__file__).resolve().parent.parent
+    rca = extract_rca_deterministic(repo_path)
+    cbom = extract_cbom_deterministic(repo_path)
+    gap = extract_cwe_gap_deterministic(repo_path, rca, cbom)
+
+    assert gap["category"] == "gap_analysis"
+    assert "owasp_table" in gap
+    assert "cwe_findings" in gap
+    assert "markdown" in gap
+    assert "compliance_score" in gap
+
+    assert "OWASP Top 10" in gap["markdown"]
+    assert "CWE Findings" in gap["markdown"]
+
+    for cwe in gap["cwe_findings"]:
+        assert "cwe_id" in cwe
+        assert "file" in cwe
+        assert "line" in cwe
+        assert "recommended_fix" in cwe
+
 def test_ci_security_audit_runner(tmp_path):
-    """Verify run_ci_audit runs successfully and generates report files."""
+    """Verify run_ci_audit runs successfully and generates complete report files (SBOM, CBOM, RCA, CWE)."""
     out_dir = tmp_path / "test_reports"
     exit_code = run_ci_audit(fail_on_critical=False, output_dir=str(out_dir))
 
     assert exit_code == 0
-    generated_files = list(out_dir.glob("audit_sbom_cbom_*"))
+    generated_files = list(out_dir.glob("audit_complete_*"))
     assert len(generated_files) >= 2  # .md and .json
 
     md_file = [f for f in generated_files if f.suffix == ".md"][0]
     json_file = [f for f in generated_files if f.suffix == ".json"][0]
 
     md_text = md_file.read_text(encoding="utf-8")
-    assert "Software Bill of Materials (SBOM)" in md_text
-    assert "Cryptography Bill of Materials (CBOM)" in md_text
+    assert "1. Software Bill of Materials (SBOM)" in md_text
+    assert "2. Cryptography Bill of Materials (CBOM)" in md_text
+    assert "3. Root Cause Analysis (RCA)" in md_text
+    assert "4. Security Gap Analysis (OWASP Top 10 & CWE Top 25)" in md_text
 
     data = json.loads(json_file.read_text(encoding="utf-8"))
     assert "sbom" in data
     assert "cbom" in data
+    assert "rca" in data
+    assert "gap_analysis" in data

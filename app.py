@@ -122,7 +122,7 @@ st.sidebar.info("💡 **Tip:** Always use the same Embedding Provider for both I
 
 # --- Main Layout ---
 st.title("🛡️ Code Audit & Security Compliance Dashboard")
-st.caption("AI-driven code repository security auditing: SBOM, CBOM, Root Cause Analysis, and OWASP Gap Analysis.")
+st.caption("AI-driven code repository security auditing: SBOM, CBOM, Root Cause Analysis (RCA), and CWE/OWASP Gap Analysis with line numbers and recommended code fixes.")
 
 tab1, tab2, tab3 = st.tabs(["📁 1. Ingest Codebase", "🔍 2. Run Security Audits", "📊 3. Past Audit Reports"])
 
@@ -177,19 +177,19 @@ with tab2:
     st.subheader("⚡ Quick Action: Full Pipeline Audit")
     col_full, col_empty = st.columns([2, 3])
     with col_full:
-        if st.button("🛡️ Run Full SBOM & CBOM Audit + Executive Summary", type="primary", use_container_width=True):
-            with st.spinner("Executing full security audit pipeline with Gemini..."):
+        if st.button("🛡️ Run Complete Security Audit (SBOM + CBOM + RCA + CWE Gap Analysis)", type="primary", use_container_width=True):
+            with st.spinner("Executing complete security audit pipeline (SBOM, CBOM, RCA, CWE Gap Analysis)..."):
                 try:
                     run_audit(
                         output_format="markdown",
                         provider=query_provider,
                         embeddings_provider=embedding_provider,
-                        categories=["sbom", "cbom"],
+                        categories=["sbom", "cbom", "rca", "gap_analysis"],
                         output_dir="reports",
                         model=gemini_model
                     )
-                    st.success("✅ Full security audit completed and report saved!")
-                    st.info("Check **Tab 3: Past Audit Reports** to view and download the generated report.")
+                    st.success("✅ Complete security audit finished! All 4 audit reports and executive summary generated.")
+                    st.info("Check **Tab 3: Past Audit Reports** to view and download the generated report with line numbers and recommended fixes.")
                 except Exception as e:
                     st.error(f"Error during audit run: {e}")
 

@@ -1,5 +1,5 @@
-name: "Audit-App Security Pipeline"
-description: "Generates SBOM (Software Bill of Materials) and CBOM (Cryptography Bill of Materials) security reports for any repository."
+name: "Audit-App Complete Security Pipeline"
+description: "Generates SBOM, CBOM, Root Cause Analysis (RCA), and CWE/OWASP Gap Analysis reports with exact file, line, and recommended code fixes for any repository."
 author: "menonkrishna57"
 
 inputs:
@@ -8,7 +8,7 @@ inputs:
     required: false
     default: "."
   google-api-key:
-    description: "Google Gemini API key for AI RAG audit"
+    description: "Google Gemini API key for AI RAG audit (optional)"
     required: false
     default: ""
   fail-on-critical:
@@ -31,14 +31,39 @@ runs:
         python -m pip install --upgrade pip
         pip install -r ${{ github.action_path }}/requirements.txt
 
-    - name: Run SBOM & CBOM Security Audit
+    - name: Start Ephemeral Qdrant Service
+      if: inputs.google-api-key != ''
+      shell: bash
+      run: |
+        docker run -d -p 6333:6333 --name qdrant-ephemeral qdrant/qdrant:latest
+        for i in {1..30}; do
+          if curl -s -f http://localhost:6333/readyz >/dev/null 2>&1; then
+            echo "✓ Ephemeral Qdrant container is online and ready!"
+            break
+          fi
+          sleep 1
+        done
+
+    - name: Run Complete Security Audit (SBOM, CBOM, RCA, CWE Gap Analysis)
       shell: bash
       env:
         GOOGLE_API_KEY: ${{ inputs.google-api-key }}
         QDRANT_URL: "http://localhost:6333"
+        GEMINI_MODEL: "gemini-3.5-flash-lite"
+        GOOGLE_EMBEDDING_MODEL: "gemini-embedding-001"
       run: |
         CRIT_FLAG=""
         if [ "${{ inputs.fail-on-critical }}" = "true" ]; then
           CRIT_FLAG="--fail-on-critical"
         fi
         python ${{ github.action_path }}/ci_security_audit.py "${{ inputs.target-path }}" $CRIT_FLAG
+
+    - name: Publish Security Audit to Summary
+      if: always()
+      shell: bash
+      run: |
+        LATEST_REPORT=$(ls -t reports/*.md 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_REPORT" ] && [ -f "$LATEST_REPORT" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat "$LATEST_REPORT" >> $GITHUB_STEP_SUMMARY
+        fi

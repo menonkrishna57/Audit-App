@@ -3,16 +3,17 @@ audit_prompts.py
 ─────────────────────────────────────────────────────────────────────────────
 Structured prompts for the code audit agent.
 Covers: SBOM, CBOM, RCA (security), Gap Analysis (OWASP / CWE).
-
-Drop these into your existing agent.py AUDIT_CATEGORIES dict,
-or use SYSTEM_PROMPT as a system message in a multi-turn agent setup.
+Ensures all security findings report:
+- Exact File Name
+- Line Number(s)
+- Problem & Security Risk Description
+- Concrete Recommended Code Fix (recommendation only, not direct modification)
 ─────────────────────────────────────────────────────────────────────────────
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT
 # Sets the agent's role, output rules, and global constraints.
-# Use as the `system` parameter in your LLM call.
 # ─────────────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """
@@ -23,28 +24,29 @@ produce structured, actionable audit reports.
 ## Core Rules
 - Base ALL findings strictly on the code chunks provided. Do not invent issues.
 - If a chunk lacks enough context for a finding, say so explicitly.
-- Every finding must include: file reference, a description, severity, and a fix.
-- Use the exact output format specified in each task. Do not add extra sections.
-- Language-aware: apply Python-specific rules for .py files, JS rules for .js/.ts,
-  and general rules for unknown file types.
-- Be concise. One finding = one clear paragraph or table row. No padding.
+- Every finding MUST specify the exact **File Name** and **Line Number(s)** based on the chunk headers (`--- Chunk N | File: <path> (Lines X-Y) ---`).
+- Every finding MUST include a concrete **Recommended Code Fix** block with complete, secure replacement code.
+- **CRITICAL INSTRUCTION**: Do NOT apply or implement the fix on the codebase directly. Your task is to:
+  1. Scan and detect the security vulnerability.
+  2. Explain the exact problem and security risk.
+  3. Provide the recommended replacement code snippet with line numbers and file names so developers can review and apply it safely.
+- Multi-language aware: apply rules for Python (.py, .ipynb), Java (.java), C/C++ (.cpp, .c, .h, .hpp).
+- Be concise, structured, and technically rigorous. No fluff.
 
 ## Severity Scale (use consistently across all reports)
-  CRITICAL  — Exploitable now, no preconditions needed
-  HIGH      — Exploitable with minor conditions (auth, network access)
-  MEDIUM    — Indirect risk, requires chaining with other issues
-  LOW       — Best-practice violation, not directly exploitable
-  INFO      — Observation, no immediate risk
+  CRITICAL  — Exploitable now, high impact, no preconditions needed
+  HIGH      — Exploitable with minor conditions (auth, network access, specific payload)
+  MEDIUM    — Indirect risk, requires chaining with other issues or misconfigurations
+  LOW       — Best-practice violation, defense-in-depth weakness
+  INFO      — Observation, informational or compliance note
 
 ## Output Language
-Always respond in English. Use Markdown formatting.
+Always respond in English. Use GitHub-flavored Markdown formatting.
 """.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SBOM — Software Bill of Materials
-# What it does: inventories all third-party libraries, packages, and versions
-# found in the code (imports, requirements, lock files, inline version strings).
 # ─────────────────────────────────────────────────────────────────────────────
 
 SBOM_PROMPT = """
@@ -55,9 +57,8 @@ An SBOM is a complete inventory of every third-party dependency used.
 
 ### What to extract
 Scan the provided code chunks for:
-1. **Direct imports** — `import x`, `from x import y`, `require('x')`, `import x from 'x'`
-2. **Version declarations** — anything in requirements.txt, pyproject.toml, package.json,
-   Pipfile, setup.py, pom.xml, build.gradle, go.mod, Cargo.toml, or inline comments
+1. **Direct imports** — `import x`, `from x import y`, `#include <x>`, `import java.x.*`
+2. **Version declarations** — requirements.txt, pom.xml, build.gradle, pyproject.toml
 3. **Indirect signals** — version strings, `__version__`, `VERSION =`, or pinned hashes
 
 ### Output Format
@@ -66,12 +67,12 @@ Produce a Markdown table with these columns:
 | Component | Version | Ecosystem | Declared In | Usage Context | Notes |
 |-----------|---------|-----------|-------------|---------------|-------|
 
-- **Component**: package/library name (e.g. `requests`, `numpy`, `flask`)
+- **Component**: package/library name (e.g. `requests`, `numpy`, `spring-boot`, `boost`)
 - **Version**: exact pin, range, or "unpinned" if no version is specified
-- **Ecosystem**: PyPI / npm / Maven / Cargo / Go / Other
-- **Declared In**: file where the dependency was found (e.g. requirements.txt, app.py)
+- **Ecosystem**: PyPI / Maven / Gradle / C++ / System / Other
+- **Declared In**: file where the dependency was found (e.g. requirements.txt, pom.xml, app.py)
 - **Usage Context**: brief note on what it's used for based on context clues
-- **Notes**: flag if unpinned, deprecated API usage spotted, or version is very old
+- **Notes**: flag if unpinned, deprecated API usage spotted, or version is outdated
 
 After the table, write a short **Summary** (3–5 sentences) covering:
 - Total unique dependencies found
@@ -87,8 +88,6 @@ After the table, write a short **Summary** (3–5 sentences) covering:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CBOM — Cryptography Bill of Materials
-# What it does: inventories all cryptographic primitives, algorithms, key sizes,
-# protocols, and libraries used — critical for compliance and quantum readiness.
 # ─────────────────────────────────────────────────────────────────────────────
 
 CBOM_PROMPT = """
@@ -104,35 +103,46 @@ Scan the provided code chunks for:
 2. **Encryption** — AES, RSA, ECC, ChaCha20, DES, 3DES, Blowfish, etc.
 3. **Key exchange / protocols** — TLS version, SSL, ECDH, DH params
 4. **Signing** — ECDSA, RSA-PSS, HMAC, JWT signing algorithms
-5. **Random number generation** — `random`, `os.urandom`, `secrets`, Math.random()
-6. **Crypto libraries** — `cryptography`, `pycryptodome`, `hashlib`, `ssl`,
-   `crypto` (Node), `javax.crypto`, `openssl`, `nacl`, etc.
-7. **Hardcoded keys or IVs** — any hex/base64 string used in a crypto context
-8. **TLS configuration** — cipher suites, protocol versions, cert validation flags
+5. **Random number generation** — `random`, `os.urandom`, `secrets`, `SecureRandom`, `rand()`
+6. **Crypto libraries** — `cryptography`, `pycryptodome`, `hashlib`, `ssl`, `javax.crypto`, `openssl`, etc.
+7. **Hardcoded keys or IVs** — any hex/base64 string or secret used in a crypto context
+8. **TLS configuration** — cipher suites, protocol versions, `verify=False`, `ssl.CERT_NONE`
 
 ### Output Format
 
 #### Section 1 — Cryptographic Asset Inventory
-| Asset | Algorithm / Primitive | Key Size / Params | Library Used | File | Quantum-Safe? |
-|-------|-----------------------|-------------------|--------------|------|---------------|
+| Asset | Algorithm / Primitive | Key Size / Params | Library Used | File & Line | Quantum-Safe? |
+|-------|-----------------------|-------------------|--------------|-------------|---------------|
 
 - **Quantum-Safe**: Yes / No / Unknown (mark RSA, ECC, DH as No)
 
-#### Section 2 — Weak or Deprecated Cryptography
-List each weak finding as:
-```
-[SEVERITY] File: <file>
-Issue: <what is weak and why>
-Fix: <concrete replacement>
-```
-Weak = MD5/SHA-1 for security, DES/3DES, RSA < 2048-bit, ECB mode, static IV,
-       hardcoded keys, `ssl.CERT_NONE`, `verify=False`, `random` for secrets.
+#### Section 2 — Weak or Deprecated Cryptography & Recommended Fixes
+For EACH weak or insecure cryptographic usage found, format as:
 
-#### Section 3 — Summary
+---
+**[SEVERITY] <Asset / Issue Name>**
+- **File**: `<file_path>`
+- **Line Number(s)**: `<line number or range from chunk header>`
+- **Issue**: <Explanation of what is weak and the cryptographic risk>
+- **Vulnerable Code**:
+```<lang>
+// Vulnerable snippet from chunk
+```
+- **Recommended Code Fix** (Recommendation only, do NOT modify the file):
+```<lang>
+// Secure replacement code snippet:
+```
+- **Fix Explanation**: <How the fix secures the implementation>
+---
+
+Weak = MD5/SHA-1 for security, DES/3DES, RSA < 2048-bit, ECB mode, static IV,
+       hardcoded keys, `ssl.CERT_NONE`, `verify=False`, standard `random` for secrets.
+
+#### Section 3 — Summary & Posture
 - Total cryptographic assets found
 - Count of quantum-unsafe primitives
 - Count of weak/deprecated usages
-- Overall cryptographic posture: Strong / Moderate / Weak
+- Overall cryptographic posture: Strong / Moderate / Needs Attention
 
 ### Code chunks to analyze
 {context}
@@ -143,55 +153,52 @@ Weak = MD5/SHA-1 for security, DES/3DES, RSA < 2048-bit, ECB mode, static IV,
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RCA — Root Cause Analysis (Security Vulnerabilities)
-# What it does: for each vulnerability found in the audit, traces WHY it exists
-# — the root cause category, contributing factors, and systemic patterns.
 # ─────────────────────────────────────────────────────────────────────────────
 
 RCA_PROMPT = """
 ## Task: Root Cause Analysis (RCA) — Security Vulnerabilities
 
-You are performing an RCA on security vulnerabilities identified in code chunks.
-Do not just list vulnerabilities — explain WHY each one exists and what systemic
-pattern it reveals.
+You are performing a Root Cause Analysis (RCA) on security vulnerabilities identified in the provided code chunks.
+Scan the code thoroughly for security flaws, explain WHY each vulnerability exists, and provide actionable recommended fixes.
+**CRITICAL**: Do NOT implement or modify the files directly. Your role is strictly to scan, identify the exact problems with file names and line numbers, and provide the recommended replacement code.
 
-### RCA Framework to apply
-For each vulnerability, determine:
-1. **Immediate Cause** — the exact line/pattern that introduces the risk
-2. **Root Cause Category** — pick the closest match:
-   - Lack of input validation
-   - Insecure default configuration
-   - Broken authentication / authorization logic
-   - Unsafe dependency or third-party trust
-   - Missing cryptographic control
-   - Improper error handling / information leakage
-   - Race condition / concurrency flaw
-   - Insecure deserialization
-   - Developer misuse of a secure API
-   - Missing security control (no logging, no rate limit, etc.)
-3. **Contributing Factors** — e.g. no code review evidence, missing tests,
-   use of deprecated API, pressure to ship, lack of security linting
-4. **Systemic Pattern** — does this appear across multiple files/functions?
-   Is it a one-off mistake or a repeated anti-pattern in the codebase?
+### Vulnerabilities to scan for (Python, Java, C/C++, Notebooks):
+- **Hardcoded Secrets**: API keys, credentials, private keys, passwords, bearer tokens
+- **Command Injection**: `subprocess.Popen(..., shell=True)`, `os.system`, `Runtime.getRuntime().exec()`, `system()`, `popen()`
+- **Code Execution / Evaluation**: `eval()`, `exec()`, `ScriptEngine`, dynamic class loading
+- **SQL / Query Injection**: Unparameterized queries, formatted strings into SQL (`f"SELECT ... {user}"`, `+ user`)
+- **Insecure Deserialization**: `pickle.loads`, `yaml.load` (without SafeLoader), `ObjectInputStream.readObject()`
+- **Path Traversal**: Unsanitized user inputs in file paths (`open(user_path)`, `File`, `FileInputStream`)
+- **Authentication & Authorization**: Missing permission checks, token bypasses, hardcoded roles
+- **Memory Safety & Input Validation**: Unchecked buffers, `strcpy`, `gets`, integer overflows in C/C++, unvalidated parameters
+- **Insecure Network / Transport**: `verify=False`, disabled SSL cert checking, cleartext HTTP
 
-### Output Format
-For each vulnerability found, produce:
+### Required Output Format per Finding:
+For every vulnerability found, produce the following block:
 
 ---
-**Finding #N**
-- **Vulnerability**: <name, e.g. SQL Injection, Hardcoded Secret>
+### Finding #N: <Vulnerability Name>
 - **Severity**: CRITICAL / HIGH / MEDIUM / LOW
-- **File & Location**: <file path, function name if visible>
-- **Immediate Cause**: <exact code pattern or construct responsible>
-- **Root Cause Category**: <category from the list above>
-- **Contributing Factors**: <bullet list>
-- **Systemic Pattern**: <is this isolated or repeated? Evidence from chunks>
-- **Recommended Fix**: <concrete, actionable — include a corrected code snippet if possible>
+- **File**: `<exact file path from chunk header>`
+- **Line Number(s)**: `<exact line number or line range from chunk header>`
+- **Root Cause Category**: <Select one: Lack of input validation | Insecure default configuration | Hardcoded credential/secret | Unsafe dynamic execution / injection | Insecure deserialization | Missing cryptographic control | Path traversal | Broken authorization | Memory safety flaw | Insecure communication>
+- **Immediate Cause & Problem Description**: <Explain in detail what the code is doing wrong, how an attacker could exploit it, and the security impact>
+- **Contributing Factors**: <Bullet list: missing linter, lack of parameterization, insecure default library options, etc.>
+- **Vulnerable Code**:
+```<lang>
+// Vulnerable snippet from chunk
+```
+- **Recommended Code Fix** (Recommendation only, do NOT modify the target file):
+```<lang>
+// Recommended secure replacement code:
+```
+- **Fix Explanation**: <Clear technical explanation of what this fix changes and why it completely eliminates the vulnerability>
 ---
 
-After all findings, write a **Systemic Summary**:
-- Which root cause categories appear most frequently?
-- What does this say about the team's security posture?
-- Top 3 process recommendations (e.g. add bandit to CI, enforce input validation helpers)
+### Systemic Summary:
+- Most prevalent root cause categories in this codebase
+- Overall security posture analysis
+- Top 3 process recommendations for the engineering team to prevent recurrence (e.g. CI secret scanning, parameterized queries, safe deserializers)
 
 ### Code chunks to analyze
 {context}
@@ -201,9 +208,7 @@ After all findings, write a **Systemic Summary**:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GAP ANALYSIS — vs. OWASP Top 10 + CWE Top 25
-# What it does: maps findings (and absences of controls) to OWASP/CWE entries,
-# rates current coverage, and produces a remediation roadmap.
+# GAP ANALYSIS — vs. OWASP Top 10 (2021) + CWE Top 25 (2024)
 # ─────────────────────────────────────────────────────────────────────────────
 
 GAP_ANALYSIS_PROMPT = """
@@ -214,67 +219,68 @@ against two industry security standards:
 - OWASP Top 10 (2021): https://owasp.org/Top10/
 - CWE Top 25 Most Dangerous Software Weaknesses (2024)
 
-### Instructions
-For EACH of the 10 OWASP categories and the top CWE entries below, assess:
-1. **Evidence Found** — does the code show signs of this vulnerability class?
-2. **Evidence of Controls** — does the code show mitigations? (validation,
-   sanitization, auth checks, parameterized queries, etc.)
-3. **Coverage Status** — Covered / Partial / Gap / Not Assessed
-4. **Risk Level** — given what you found, what is the residual risk?
+**CRITICAL**: Do NOT implement or modify the files directly. For any detected gap or vulnerability, state the exact File Name, Line Number(s), explain the problem, and provide a concrete Recommended Code Fix snippet.
 
-### OWASP Top 10 (2021) — assess all 10
-A01 Broken Access Control
-A02 Cryptographic Failures
-A03 Injection (SQL, command, LDAP, XSS)
-A04 Insecure Design
-A05 Security Misconfiguration
-A06 Vulnerable and Outdated Components
-A07 Identification and Authentication Failures
-A08 Software and Data Integrity Failures
-A09 Security Logging and Monitoring Failures
-A10 Server-Side Request Forgery (SSRF)
+### Standards to Assess
 
-### CWE Top 25 — assess where evidence exists in the chunks
-Focus on: CWE-79 (XSS), CWE-89 (SQL Injection), CWE-22 (Path Traversal),
-CWE-78 (OS Command Injection), CWE-20 (Improper Input Validation),
-CWE-502 (Deserialization), CWE-287 (Improper Authentication),
+#### OWASP Top 10 (2021):
+- A01:2021 Broken Access Control
+- A02:2021 Cryptographic Failures
+- A03:2021 Injection (SQL, OS Command, Code, LDAP, XSS)
+- A04:2021 Insecure Design
+- A05:2021 Security Misconfiguration
+- A06:2021 Vulnerable and Outdated Components
+- A07:2021 Identification and Authentication Failures
+- A08:2021 Software and Data Integrity Failures
+- A09:2021 Security Logging and Monitoring Failures
+- A10:2021 Server-Side Request Forgery (SSRF)
+
+#### CWE Top 25 (2024):
+Focus on: CWE-79 (XSS), CWE-89 (SQL Injection), CWE-78 (OS Command Injection),
+CWE-22 (Path Traversal), CWE-20 (Improper Input Validation), CWE-502 (Insecure Deserialization),
+CWE-798 (Hardcoded Credentials), CWE-94/95 (Code Injection / Eval), CWE-287 (Improper Authentication),
 CWE-862 (Missing Authorization), CWE-306 (Missing Auth for Critical Function),
-CWE-798 (Hardcoded Credentials), CWE-77 (Command Injection),
-CWE-190 (Integer Overflow), CWE-416 (Use After Free — if applicable)
+CWE-119/120/190 (Buffer Overflow / Integer Overflow in C/C++), CWE-416 (Use After Free).
 
 ### Output Format
 
 #### Section 1 — OWASP Top 10 Gap Table
-| OWASP ID | Category | Evidence of Vulnerability | Evidence of Controls | Status | Residual Risk |
-|----------|----------|--------------------------|----------------------|--------|---------------|
+| OWASP ID | Category | Evidence & Location (File, Line) | Controls Observed | Status | Residual Risk |
+|----------|----------|----------------------------------|-------------------|--------|---------------|
 
 Status options: ✅ Covered | ⚠️ Partial | ❌ Gap | ➖ Not Assessed
 
-#### Section 2 — CWE Findings Table
-| CWE ID | Name | Found In | Severity | Status |
-|--------|------|----------|----------|--------|
+#### Section 2 — CWE Findings & Recommended Code Fixes
+For EACH CWE identified in the codebase:
 
-Only include CWEs where evidence (present or absent) was found in the chunks.
+---
+### [CWE-<ID>] <CWE Title>
+- **Severity**: CRITICAL / HIGH / MEDIUM / LOW
+- **File**: `<exact file path from chunk header>`
+- **Line Number(s)**: `<exact line number or line range from chunk header>`
+- **Problem & Impact**: <Detailed description of the weakness in the code and potential exploit scenario>
+- **Vulnerable Code**:
+```<lang>
+// Vulnerable snippet from chunk
+```
+- **Recommended Code Fix** (Recommendation only, do NOT apply directly):
+```<lang>
+// Secure replacement code:
+```
+- **Fix Guidance**: <How to integrate and test the fix safely>
+---
 
 #### Section 3 — Remediation Roadmap
-Prioritized action list. Format each item as:
-
-**[Priority N] <Action title>**
-- Addresses: <OWASP ID(s) and/or CWE ID(s)>
-- Effort: Low / Medium / High
-- What to do: <specific, concrete steps>
-
-Priority 1 = fix immediately (CRITICAL gaps)
-Priority 2 = fix in current sprint (HIGH gaps)
-Priority 3 = fix in next release (MEDIUM gaps)
-Priority 4 = track and improve (LOW / process gaps)
+Prioritized action list based on severity:
+- **Priority 1 (Critical / Fix Immediately)**: Critical injection, remote execution, hardcoded credentials
+- **Priority 2 (High / Current Sprint)**: Broken access control, unverified certificates, unsafe deserialization
+- **Priority 3 (Medium / Next Release)**: Missing rate limiting, unpinned dependencies, quantum-unsafe crypto
+- **Priority 4 (Low / Ongoing)**: Defensive logging, documentation, security header hardening
 
 #### Section 4 — Overall Compliance Score
-Rate the codebase on each standard:
-- OWASP Top 10 Coverage: X/10 categories adequately covered
-- CWE Top 25 Coverage: X/N assessed categories covered
-- Overall Security Maturity: Level 1 (Ad hoc) / Level 2 (Partial) /
-  Level 3 (Defined) / Level 4 (Managed) [use OWASP SAMM scale]
+- **OWASP Top 10 Coverage**: X/10 categories adequately protected
+- **CWE Top 25 Coverage**: X/N assessed categories covered
+- **Overall Security Maturity**: Level 1 (Ad hoc) / Level 2 (Partial) / Level 3 (Defined) / Level 4 (Managed)
 
 ### Code chunks to analyze
 {context}
@@ -285,41 +291,38 @@ Rate the codebase on each standard:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RAG QUERY STRINGS
-# Optimised similarity search queries per report type.
-# Pass these to vectorstore.similarity_search(query, k=TOP_K)
 # ─────────────────────────────────────────────────────────────────────────────
 
 RAG_QUERIES = {
     "sbom": [
         "import require install dependency package library version",
-        "requirements.txt pyproject.toml package.json setup.py Pipfile go.mod Cargo.toml",
-        "third party library external module pip npm maven gradle",
+        "requirements.txt pyproject.toml pom.xml build.gradle package.json",
+        "third party library external module pip maven gradle include",
     ],
     "cbom": [
         "cryptography hash encrypt decrypt AES RSA SHA MD5 TLS SSL certificate",
-        "hashlib ssl secrets random pycryptodome cryptography jwt token signing",
-        "key password secret token base64 encode decode cipher verify",
+        "hashlib ssl secrets random pycryptodome cryptography jwt token signing SecureRandom",
+        "key password secret token base64 encode decode cipher verify CERT_NONE",
     ],
     "rca": [
-        "SQL injection eval exec subprocess shell os.system input user request",
-        "hardcoded password secret API key token credential config environment",
-        "authentication authorization session cookie token validation bypass",
-        "deserialize pickle yaml load unsafe input validation sanitize",
+        "SQL injection eval exec subprocess shell os.system input user request Runtime.exec",
+        "hardcoded password secret API key token credential config environment private key",
+        "authentication authorization session cookie token validation bypass sanitize",
+        "deserialize pickle yaml load unsafe input validation sanitize strcpy gets buffer",
     ],
     "gap_analysis": [
-        "access control authorization permission role admin user check",
-        "SQL injection XSS CSRF input validation sanitize escape",
-        "logging audit trail monitor exception error handler",
-        "SSRF request fetch url open redirect external",
-        "session token auth login password hash bcrypt",
-        "dependency version outdated vulnerable package",
+        "access control authorization permission role admin user check bypass",
+        "SQL injection XSS CSRF input validation sanitize escape shell command injection",
+        "logging audit trail monitor exception error handler leak",
+        "SSRF request fetch url open redirect external connection",
+        "session token auth login password hash bcrypt secret token verify=False",
+        "dependency version outdated vulnerable package CWE OWASP",
     ],
 }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REPORT METADATA
-# Used by agent.py to drive report generation loop.
 # ─────────────────────────────────────────────────────────────────────────────
 
 REPORT_CONFIG = {
@@ -327,28 +330,28 @@ REPORT_CONFIG = {
         "title": "Software Bill of Materials (SBOM)",
         "prompt_template": SBOM_PROMPT,
         "queries": RAG_QUERIES["sbom"],
-        "top_k": 12,           # needs broad coverage across all files
-        "description": "Inventory of all third-party dependencies and packages",
+        "top_k": 12,
+        "description": "Inventory of all third-party dependencies, packages, and manifests",
     },
     "cbom": {
         "title": "Cryptography Bill of Materials (CBOM)",
         "prompt_template": CBOM_PROMPT,
         "queries": RAG_QUERIES["cbom"],
         "top_k": 10,
-        "description": "Inventory of all cryptographic assets and weak crypto usage",
+        "description": "Cryptographic assets, weak ciphers, and quantum readiness",
     },
     "rca": {
-        "title": "Root Cause Analysis — Security Vulnerabilities",
+        "title": "Root Cause Analysis (RCA) — Security Vulnerabilities",
         "prompt_template": RCA_PROMPT,
         "queries": RAG_QUERIES["rca"],
-        "top_k": 10,
-        "description": "Root cause breakdown of each security vulnerability found",
+        "top_k": 12,
+        "description": "Deep-dive root cause breakdown with line numbers and recommended code fixes",
     },
     "gap_analysis": {
-        "title": "Security Gap Analysis (OWASP Top 10 / CWE Top 25)",
+        "title": "Security Gap Analysis (OWASP Top 10 & CWE Top 25)",
         "prompt_template": GAP_ANALYSIS_PROMPT,
         "queries": RAG_QUERIES["gap_analysis"],
-        "top_k": 15,           # needs widest retrieval for full coverage
-        "description": "Compliance gap assessment against OWASP 2021 and CWE Top 25",
+        "top_k": 15,
+        "description": "Compliance gaps against OWASP 2021 & CWE Top 25 with code remediation",
     },
 }
