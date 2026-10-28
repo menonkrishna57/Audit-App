@@ -7,20 +7,30 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
-from langchain_ollama import OllamaLLM, OllamaEmbeddings
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
+
+try:
+    from langchain_ollama import OllamaLLM, OllamaEmbeddings
+except ImportError:
+    OllamaLLM = None
+    OllamaEmbeddings = None
+
+try:
+    from langchain_qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
+except ImportError:
+    QdrantVectorStore = None
+    QdrantClient = None
 
 from prompts import SYSTEM_PROMPT, REPORT_CONFIG
 
 load_dotenv()  # loads GOOGLE_API_KEY from .env if present
 
-QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "code_audit"
-OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"  # local fallback
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
+OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")  # local fallback
 
-LLM_MODEL = "qwen3:4b-q4_K_M"
-GEMINI_MODEL = "gemini-2.0-flash-lite"  # free tier on AI Studio
+LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "qwen3:4b-q4_K_M")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")  # free tier on AI Studio
 
 console = Console()
 
@@ -29,6 +39,8 @@ def get_embeddings(provider: str):
     if provider == "google":
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in environment or .env")
         return GoogleGenerativeAIEmbeddings(
             model="models/text-embedding-004",
             google_api_key=api_key,
@@ -37,11 +49,15 @@ def get_embeddings(provider: str):
     elif provider == "jina":
         from langchain_community.embeddings import JinaEmbeddings
         api_key = os.getenv("JINA_API_KEY")
+        if not api_key:
+            raise ValueError("JINA_API_KEY not found in environment or .env")
         return JinaEmbeddings(
             jina_api_key=api_key,
             model_name="jina-embeddings-v2-base-code",
         )
     else:
+        if OllamaEmbeddings is None:
+            raise ImportError("langchain-ollama is required for Ollama embeddings. Please install with 'pip install langchain-ollama'")
         return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
 
 
@@ -51,7 +67,7 @@ def get_llm(provider: str):
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            console.print("[bold red]Error:[/bold red] GOOGLE_API_KEY not found. Add it to your .env file.")
+            console.print("[bold red]Error:[/bold red] GOOGLE_API_KEY not found. Add it to your .env file or environment.")
             raise SystemExit(1)
         console.print(f"[bold green]Provider:[/bold green] Google Gemini ({GEMINI_MODEL})\n")
         return ChatGoogleGenerativeAI(
@@ -60,6 +76,8 @@ def get_llm(provider: str):
             google_api_key=api_key,
         )
     else:
+        if OllamaLLM is None:
+            raise ImportError("langchain-ollama is required for Ollama LLM. Please install with 'pip install langchain-ollama'")
         console.print(f"[bold green]Provider:[/bold green] Ollama ({LLM_MODEL})\n")
         return OllamaLLM(
             model=LLM_MODEL,
@@ -69,6 +87,8 @@ def get_llm(provider: str):
 
 
 def get_vectorstore(embeddings_provider: str = "ollama"):
+    if QdrantClient is None or QdrantVectorStore is None:
+        raise ImportError("qdrant-client and langchain-qdrant are required for vector store.")
     client = QdrantClient(url=QDRANT_URL)
     embeddings = get_embeddings(embeddings_provider)
     return QdrantVectorStore(
@@ -106,18 +126,36 @@ def audit_category(llm, vectorstore, category: str, config: dict) -> dict:
 """
 
     response = llm.invoke(prompt)
+    findings_text = response.content if hasattr(response, "content") else str(response)
+
     return {
         "category": category,
-        "findings": response,
+        "findings": findings_text,
         "chunks_analyzed": len(docs),
         "files_sampled": list({d.metadata.get("file", "?") for d in docs}),
     }
 
-def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddings_provider: str = "ollama"):
+def run_audit(
+    output_format: str = "markdown",
+    provider: str = "ollama",
+    embeddings_provider: str = "ollama",
+    categories: list = None,
+    output_dir: str = "reports",
+    fail_on_critical: bool = False
+):
+    target_configs = {
+        k: v for k, v in REPORT_CONFIG.items()
+        if not categories or k in categories
+    }
+
+    if not target_configs:
+        console.print("[bold red]Error: No valid categories selected.[/bold red]")
+        return
+
     llm = get_llm(provider)
     vectorstore = get_vectorstore(embeddings_provider)
 
-    console.print(f"[bold green]Starting audit...[/bold green]")
+    console.print(f"[bold green]Starting audit ({', '.join(target_configs.keys())})...[/bold green]")
     
     results = {}
     with Progress(
@@ -128,9 +166,9 @@ def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddi
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("[cyan]Running reports...", total=len(REPORT_CONFIG) + 1)
+        task = progress.add_task("[cyan]Running reports...", total=len(target_configs) + 1)
         
-        for category, config in REPORT_CONFIG.items():
+        for category, config in target_configs.items():
             progress.update(task, description=f"[cyan]Generating:[/cyan] {config['title']}")
             results[category] = audit_category(llm, vectorstore, category, config)
             progress.advance(task)
@@ -142,21 +180,23 @@ def run_audit(output_format: str = "markdown", provider: str = "ollama", embeddi
             f"## {r['category'].upper()}\n{r['findings']}" for r in results.values()
         )
         summary_prompt = f"""You are a senior software engineer writing an executive summary of a code audit.
-Below are findings across {len(REPORT_CONFIG)} audit categories. Write a concise 3-5 sentence executive summary
+Below are findings across {len(target_configs)} audit categories. Write a concise 3-5 sentence executive summary
 that highlights the most critical issues and the overall health of the codebase.
 
 {summary_input}
 
 Executive summary:"""
 
-        summary = llm.invoke(summary_prompt)
+        summary_res = llm.invoke(summary_prompt)
+        summary = summary_res.content if hasattr(summary_res, "content") else str(summary_res)
+
         progress.advance(task)
         progress.update(task, description="[green]Audit complete![/green]")
 
     # Assemble report
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     report_lines = [
-        f"# Internal Code Audit Report",
+        "# Internal Code Audit Report",
         f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n",
         "## Executive Summary",
         summary,
@@ -172,18 +212,36 @@ Executive summary:"""
     report_md = "\n".join(report_lines)
 
     # Save
-    Path("reports").mkdir(exist_ok=True)
-    out_path = f"reports/audit_{timestamp}.md"
-    Path(out_path).write_text(report_md, encoding="utf-8")
+    out_dir_path = Path(output_dir)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir_path / f"audit_{timestamp}.md"
+    out_path.write_text(report_md, encoding="utf-8")
 
     console.print(f"\n[bold green]✓ Report saved to {out_path}[/bold green]")
     console.print(Markdown(report_md))
 
     if output_format == "json":
-        json_path = f"reports/audit_{timestamp}.json"
-        with open(json_path, "w") as f:
+        json_path = out_dir_path / f"audit_{timestamp}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
             json.dump({"summary": summary, "categories": list(results.values())}, f, indent=2)
         console.print(f"[bold green]✓ JSON saved to {json_path}[/bold green]")
+
+    # Write to GitHub Actions Step Summary if running in GitHub Actions CI
+    github_summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if github_summary_path:
+        try:
+            with open(github_summary_path, "a", encoding="utf-8") as f:
+                f.write(f"\n\n{report_md}\n")
+            console.print("[bold green]✓ Appended audit report to GitHub Actions Step Summary[/bold green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not write to GITHUB_STEP_SUMMARY: {e}[/yellow]")
+
+    if fail_on_critical:
+        for r in results.values():
+            findings_text = str(r.get("findings", "")).upper()
+            if "CRITICAL" in findings_text:
+                console.print("\n[bold red]CI Pipeline Check: CRITICAL severity findings detected in report![/bold red]")
+                raise SystemExit(1)
 
 if __name__ == "__main__":
     import argparse
@@ -194,5 +252,18 @@ if __name__ == "__main__":
                         help="LLM provider to use (default: ollama)")
     parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
                         help="Embedding provider — must match what was used during ingest (default: ollama)")
+    parser.add_argument("--categories", nargs="+", choices=list(REPORT_CONFIG.keys()), default=list(REPORT_CONFIG.keys()),
+                        help="Audit categories to run (e.g. sbom cbom) (default: all)")
+    parser.add_argument("--output-dir", default="reports",
+                        help="Output directory for reports (default: reports)")
+    parser.add_argument("--fail-on-critical", action="store_true",
+                        help="Fail with exit code 1 if CRITICAL findings are found (for CI/CD pipelines)")
     args = parser.parse_args()
-    run_audit(args.format, args.provider, args.embeddings)
+    run_audit(
+        output_format=args.format,
+        provider=args.provider,
+        embeddings_provider=args.embeddings,
+        categories=args.categories,
+        output_dir=args.output_dir,
+        fail_on_critical=args.fail_on_critical
+    )

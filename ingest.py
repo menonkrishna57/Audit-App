@@ -4,19 +4,38 @@ from pathlib import Path
 from tqdm import tqdm
 
 from dotenv import load_dotenv
-from langchain_ollama import OllamaEmbeddings
-from langchain_qdrant import QdrantVectorStore
-from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+
+try:
+    from langchain_ollama import OllamaEmbeddings
+except ImportError:
+    OllamaEmbeddings = None
+
+try:
+    from langchain_qdrant import QdrantVectorStore
+except ImportError:
+    QdrantVectorStore = None
+
+try:
+    from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+except ImportError:
+    Language = None
+    RecursiveCharacterTextSplitter = None
+
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, VectorParams
+except ImportError:
+    QdrantClient = None
+    Distance = None
+    VectorParams = None
 
 load_dotenv()
 
-QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "code_audit"
-OLLAMA_EMBEDDING_MODEL = "unclemusclez/jina-embeddings-v2-base-code"
-CHUNK_SIZE = 1500
-CHUNK_OVERLAP = 150
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
+OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 
 def get_embeddings(provider: str):
     """Return the appropriate LangChain Embeddings object based on provider.
@@ -29,8 +48,8 @@ def get_embeddings(provider: str):
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY not found in .env")
-        print(f"Embedding provider: Google (text-embedding-004, 768-dim)")
+            raise ValueError("GOOGLE_API_KEY not found in environment or .env")
+        print("Embedding provider: Google (text-embedding-004, 768-dim)")
         # output_dimensionality=768 matches the Qdrant collection size
         return GoogleGenerativeAIEmbeddings(
             model="models/text-embedding-004",
@@ -41,33 +60,50 @@ def get_embeddings(provider: str):
         from langchain_community.embeddings import JinaEmbeddings
         api_key = os.getenv("JINA_API_KEY")
         if not api_key:
-            raise ValueError("JINA_API_KEY not found in .env")
-        print(f"Embedding provider: Jina AI cloud (jina-embeddings-v2-base-code)")
+            raise ValueError("JINA_API_KEY not found in environment or .env")
+        print("Embedding provider: Jina AI cloud (jina-embeddings-v2-base-code)")
         return JinaEmbeddings(
             jina_api_key=api_key,
             model_name="jina-embeddings-v2-base-code",
         )
     else:
+        if OllamaEmbeddings is None:
+            raise ImportError("langchain-ollama is required for Ollama embeddings. Please install with 'pip install langchain-ollama'")
         print(f"Embedding provider: Ollama local ({OLLAMA_EMBEDDING_MODEL})")
         return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
 
 
 # File extensions -> LangChain Language enum
-LANG_MAP = {
-    ".py": Language.PYTHON,
-    ".js": Language.JS,
-    ".ts": Language.JS,
-    ".java": Language.JAVA,
-    ".go": Language.GO,
-    ".cpp": Language.CPP,
-    ".c": Language.CPP,
-    ".rb": Language.RUBY,
-    ".rs": Language.RUST,
-}
+if Language is not None:
+    LANG_MAP = {
+        ".py": Language.PYTHON,
+        ".js": Language.JS,
+        ".ts": Language.JS,
+        ".java": Language.JAVA,
+        ".go": Language.GO,
+        ".cpp": Language.CPP,
+        ".c": Language.CPP,
+        ".rb": Language.RUBY,
+        ".rs": Language.RUST,
+    }
+else:
+    LANG_MAP = {
+        ".py": "python",
+        ".js": "js",
+        ".ts": "js",
+        ".java": "java",
+        ".go": "go",
+        ".cpp": "cpp",
+        ".c": "cpp",
+        ".rb": "ruby",
+        ".rs": "rust",
+    }
 
 def get_splitter(ext: str):
-    lang = LANG_MAP.get(ext)
-    if lang:
+    if RecursiveCharacterTextSplitter is None:
+        raise ImportError("langchain-text-splitters is required for text splitting. Please install with 'pip install langchain-text-splitters'")
+    lang = LANG_MAP.get(ext) if Language is not None else None
+    if lang and Language is not None:
         return RecursiveCharacterTextSplitter.from_language(
             language=lang, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
         )
@@ -82,14 +118,14 @@ def collect_files(repo_path: str) -> list[Path]:
         "embeddings", "vectors", ".qdrant", "qdrant_storage", ".chroma", ".faiss",
         ".vscode", ".idea", ".pytest_cache", ".ruff_cache", ".mypy_cache",
         # Third-party / vendor code — excluded to prevent polluting audit results
-        "vendor", "lib", "static", "assets", "themes", "bower_components",".conda","reports"
+        "vendor", "lib", "static", "assets", "themes", "bower_components", ".conda", "reports"
     }
     skip_files = {
         "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
         "embeddings.json", "vectors.json", "embeddings.csv", "vectors.csv", ".env"
     }
     extensions = set(LANG_MAP.keys()) | {
-        ".md", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".csv", ".tsv", ".xml"
+        ".md", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".csv", ".tsv", ".xml", ".txt"
     }
     files = []
     for p in Path(repo_path).rglob("*"):
@@ -114,6 +150,9 @@ def collect_files(repo_path: str) -> list[Path]:
     return files
 
 def ingest(repo_path: str, embeddings_provider: str = "ollama"):
+    if QdrantClient is None or QdrantVectorStore is None:
+        raise ImportError("qdrant-client and langchain-qdrant are required for ingestion.")
+
     client = QdrantClient(url=QDRANT_URL)
 
     # Create or recreate collection

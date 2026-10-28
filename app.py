@@ -2,11 +2,16 @@ import os
 import time
 import requests
 import streamlit as st
-import tkinter as tk
-from tkinter import filedialog
 from datetime import datetime
 from pathlib import Path
 import json
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    HAS_TKINTER = True
+except Exception:
+    HAS_TKINTER = False
 
 from prompts import REPORT_CONFIG
 from agent import get_llm, get_vectorstore, audit_category
@@ -15,22 +20,29 @@ from ingest import ingest
 # --- Page Configuration ---
 st.set_page_config(page_title="Audit App Dashboard", layout="wide", page_icon="🛡️")
 
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+
 # --- Helper Functions ---
 def check_qdrant_status():
     try:
-        response = requests.get("http://localhost:6333", timeout=2)
+        response = requests.get(QDRANT_URL, timeout=2)
         return response.status_code == 200
     except requests.RequestException:
         return False
 
 def select_folder():
-    """Opens a Windows Explorer dialog to select a folder."""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    folder_path = filedialog.askdirectory(master=root)
-    root.destroy()
-    return folder_path
+    """Opens a Windows Explorer dialog to select a folder if tkinter is available."""
+    if not HAS_TKINTER:
+        return ""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        folder_path = filedialog.askdirectory(master=root)
+        root.destroy()
+        return folder_path
+    except Exception:
+        return ""
 
 # --- Sidebar Configuration ---
 st.sidebar.title("⚙️ Settings")
@@ -71,18 +83,19 @@ tab1, tab2 = st.tabs(["📁 Ingest Codebase", "📄 Run Reports"])
 with tab1:
     st.header("Ingest Codebase into Qdrant")
     
-    st.markdown("Select a folder using the Windows Explorer dialog, or paste the path manually below.")
+    st.markdown("Select a folder or enter the path manually below.")
     
     col1, col2 = st.columns([3, 1])
     
-    with col2:
-        st.write("") # Spacing
-        st.write("")
-        if st.button("📂 Browse Folder (Windows)"):
-            folder_path = select_folder()
-            if folder_path:
-                st.session_state["repo_path"] = folder_path
-                st.rerun()
+    if HAS_TKINTER and os.name == 'nt':
+        with col2:
+            st.write("") # Spacing
+            st.write("")
+            if st.button("📂 Browse Folder (Windows)"):
+                folder_path = select_folder()
+                if folder_path:
+                    st.session_state["repo_path"] = folder_path
+                    st.rerun()
                 
     with col1:
         repo_path = st.text_input(
