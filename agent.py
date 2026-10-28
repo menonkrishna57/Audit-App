@@ -8,6 +8,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 
+from langchain_core.embeddings import Embeddings
+
 try:
     from langchain_ollama import OllamaLLM, OllamaEmbeddings
 except ImportError:
@@ -29,6 +31,7 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")  # local fallback
 GOOGLE_EMBEDDING_MODEL = os.getenv("GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001")
+JINA_EMBEDDING_MODEL = os.getenv("JINA_EMBEDDING_MODEL", "jina-embeddings-v2-base-code")
 
 LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "qwen3:4b-q4_K_M")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
@@ -41,6 +44,41 @@ SUPPORTED_GEMINI_MODELS = [
 ]
 
 console = Console()
+
+class DirectJinaEmbeddings(Embeddings):
+    """Lightweight direct Jina AI embeddings client using requests (subclasses LangChain Embeddings)."""
+    def __init__(self, jina_api_key: str, model_name: str = "jina-embeddings-v2-base-code"):
+        self.api_key = jina_api_key
+        self.model_name = model_name
+        self.url = "https://api.jina.ai/v1/embeddings"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        import requests
+        if not texts:
+            return []
+        embeddings = []
+        batch_size = 64
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            payload = {
+                "model": self.model_name,
+                "input": batch
+            }
+            resp = requests.post(self.url, json=payload, headers=headers, timeout=60)
+            if resp.status_code != 200:
+                raise ValueError(f"Jina API error ({resp.status_code}): {resp.text}")
+            data = resp.json()["data"]
+            data_sorted = sorted(data, key=lambda x: x.get("index", 0))
+            for item in data_sorted:
+                embeddings.append(item["embedding"])
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
 
 def extract_text_content(res) -> str:
     """Extract clean string text from LLM response (handling string, list of dicts, or AIMessage)."""
@@ -77,14 +115,20 @@ def get_embeddings(provider: str):
             task_type="retrieval_query",  # query-side task type
         )
     elif provider == "jina":
-        from langchain_community.embeddings import JinaEmbeddings
         api_key = os.getenv("JINA_API_KEY")
         if not api_key:
-            raise ValueError("JINA_API_KEY not found in environment or .env")
-        return JinaEmbeddings(
-            jina_api_key=api_key,
-            model_name="jina-embeddings-v2-base-code",
-        )
+            raise ValueError("JINA_API_KEY not found in environment or .env. Get a free key at https://jina.ai")
+        try:
+            from langchain_community.embeddings import JinaEmbeddings
+            return JinaEmbeddings(
+                jina_api_key=api_key,
+                model_name=JINA_EMBEDDING_MODEL,
+            )
+        except ImportError:
+            return DirectJinaEmbeddings(
+                jina_api_key=api_key,
+                model_name=JINA_EMBEDDING_MODEL,
+            )
     else:
         if OllamaEmbeddings is None:
             raise ImportError("langchain-ollama is required for Ollama embeddings. Please install with 'pip install langchain-ollama'")

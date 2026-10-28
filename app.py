@@ -29,6 +29,7 @@ st.set_page_config(
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 HAS_GOOGLE_KEY = bool(os.getenv("GOOGLE_API_KEY"))
+HAS_JINA_KEY = bool(os.getenv("JINA_API_KEY"))
 
 # --- Helper Functions ---
 def check_qdrant_status():
@@ -75,6 +76,11 @@ if HAS_GOOGLE_KEY:
     st.sidebar.success("🔑 Google API Key: Configured")
 else:
     st.sidebar.warning("⚠️ Google API Key: Missing from .env")
+
+if HAS_JINA_KEY:
+    st.sidebar.success("🔑 Jina API Key: Configured")
+else:
+    st.sidebar.info("ℹ️ Jina API Key: Not set (optional)")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Model Configuration")

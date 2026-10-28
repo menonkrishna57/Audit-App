@@ -1,9 +1,12 @@
 import os
+import json
 import hashlib
 from pathlib import Path
 from tqdm import tqdm
 
 from dotenv import load_dotenv
+
+from langchain_core.embeddings import Embeddings
 
 try:
     from langchain_ollama import OllamaEmbeddings
@@ -35,8 +38,44 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "code_audit")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "unclemusclez/jina-embeddings-v2-base-code")
 GOOGLE_EMBEDDING_MODEL = os.getenv("GOOGLE_EMBEDDING_MODEL", "gemini-embedding-001")
+JINA_EMBEDDING_MODEL = os.getenv("JINA_EMBEDDING_MODEL", "jina-embeddings-v2-base-code")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+
+class DirectJinaEmbeddings(Embeddings):
+    """Lightweight direct Jina AI embeddings client using requests (subclasses LangChain Embeddings)."""
+    def __init__(self, jina_api_key: str, model_name: str = "jina-embeddings-v2-base-code"):
+        self.api_key = jina_api_key
+        self.model_name = model_name
+        self.url = "https://api.jina.ai/v1/embeddings"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        import requests
+        if not texts:
+            return []
+        embeddings = []
+        batch_size = 64
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            payload = {
+                "model": self.model_name,
+                "input": batch
+            }
+            resp = requests.post(self.url, json=payload, headers=headers, timeout=60)
+            if resp.status_code != 200:
+                raise ValueError(f"Jina API error ({resp.status_code}): {resp.text}")
+            data = resp.json()["data"]
+            data_sorted = sorted(data, key=lambda x: x.get("index", 0))
+            for item in data_sorted:
+                embeddings.append(item["embedding"])
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
 
 def get_embeddings(provider: str):
     """Return the appropriate LangChain Embeddings object based on provider.
@@ -59,15 +98,21 @@ def get_embeddings(provider: str):
             task_type="retrieval_document",
         )
     elif provider == "jina":
-        from langchain_community.embeddings import JinaEmbeddings
         api_key = os.getenv("JINA_API_KEY")
         if not api_key:
-            raise ValueError("JINA_API_KEY not found in environment or .env")
-        print("Embedding provider: Jina AI cloud (jina-embeddings-v2-base-code)")
-        return JinaEmbeddings(
-            jina_api_key=api_key,
-            model_name="jina-embeddings-v2-base-code",
-        )
+            raise ValueError("JINA_API_KEY not found in environment or .env. Get a free key at https://jina.ai")
+        print(f"Embedding provider: Jina AI cloud ({JINA_EMBEDDING_MODEL}, 768-dim)")
+        try:
+            from langchain_community.embeddings import JinaEmbeddings
+            return JinaEmbeddings(
+                jina_api_key=api_key,
+                model_name=JINA_EMBEDDING_MODEL,
+            )
+        except ImportError:
+            return DirectJinaEmbeddings(
+                jina_api_key=api_key,
+                model_name=JINA_EMBEDDING_MODEL,
+            )
     else:
         if OllamaEmbeddings is None:
             raise ImportError("langchain-ollama is required for Ollama embeddings. Please install with 'pip install langchain-ollama'")
@@ -75,30 +120,30 @@ def get_embeddings(provider: str):
         return OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
 
 
-# File extensions -> LangChain Language enum
+# Language mapping specifically for Python, Jupyter Notebooks, Java, C/C++
 if Language is not None:
     LANG_MAP = {
         ".py": Language.PYTHON,
-        ".js": Language.JS,
-        ".ts": Language.JS,
+        ".ipynb": Language.PYTHON,
         ".java": Language.JAVA,
-        ".go": Language.GO,
         ".cpp": Language.CPP,
         ".c": Language.CPP,
-        ".rb": Language.RUBY,
-        ".rs": Language.RUST,
+        ".cc": Language.CPP,
+        ".cxx": Language.CPP,
+        ".h": Language.CPP,
+        ".hpp": Language.CPP,
     }
 else:
     LANG_MAP = {
         ".py": "python",
-        ".js": "js",
-        ".ts": "js",
+        ".ipynb": "python",
         ".java": "java",
-        ".go": "go",
         ".cpp": "cpp",
         ".c": "cpp",
-        ".rb": "ruby",
-        ".rs": "rust",
+        ".cc": "cpp",
+        ".cxx": "cpp",
+        ".h": "cpp",
+        ".hpp": "cpp",
     }
 
 def get_splitter(ext: str):
@@ -114,23 +159,34 @@ def get_splitter(ext: str):
     )
 
 def collect_files(repo_path: str) -> list[Path]:
+    """Collect strictly Python (.py, .ipynb), Java (.java), and C/C++ (.cpp, .c, .h, .hpp) files,
+    plus dependency manifests (requirements.txt, pom.xml, build.gradle) for SBOM tracking."""
     skip_dirs = {
         ".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
         ".next", ".nuxt", ".cache", "out", "public", ".docusaurus", "data", "env", ".env",
         "embeddings", "vectors", ".qdrant", "qdrant_storage", ".chroma", ".faiss",
         ".vscode", ".idea", ".pytest_cache", ".ruff_cache", ".mypy_cache",
-        # Third-party / vendor code — excluded to prevent polluting audit results
         "vendor", "lib", "static", "assets", "themes", "bower_components", ".conda", "reports"
     }
     skip_files = {
         "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb",
         "embeddings.json", "vectors.json", "embeddings.csv", "vectors.csv", ".env"
     }
-    extensions = set(LANG_MAP.keys()) | {
-        ".md", ".yaml", ".yml", ".toml", ".json", ".jsonl", ".csv", ".tsv", ".xml", ".txt"
+    
+    # Strictly allow Python, Jupyter, Java, C/C++ code files
+    code_extensions = {
+        ".py", ".ipynb", ".java", ".cpp", ".c", ".cc", ".cxx", ".h", ".hpp"
     }
+    # Manifest files needed to identify third-party packages for SBOM
+    manifest_names = {
+        "requirements.txt", "pom.xml", "build.gradle", "pyproject.toml"
+    }
+
     files = []
     for p in Path(repo_path).rglob("*"):
+        if not p.is_file():
+            continue
+
         # Exclude video formats explicitly
         if p.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
             continue
@@ -147,8 +203,11 @@ def collect_files(repo_path: str) -> list[Path]:
 
         if p.name.lower() in {name.lower() for name in skip_files} or p.suffix == ".lock" or ".min." in p.name:
             continue
-        if p.is_file() and p.suffix in extensions:
+        
+        # Keep strictly requested code files + dependency manifests
+        if p.suffix.lower() in code_extensions or p.name.lower() in manifest_names:
             files.append(p)
+
     return files
 
 def ingest(repo_path: str, embeddings_provider: str = "ollama"):
@@ -172,20 +231,42 @@ def ingest(repo_path: str, embeddings_provider: str = "ollama"):
     files = collect_files(repo_path)
     
     from collections import Counter
-    ext_counts = Counter(f.suffix for f in files)
-    print(f"\nFound {len(files)} total files. Breakdown:")
+    ext_counts = Counter(f.suffix.lower() for f in files)
+    print(f"\nFound {len(files)} total target files (.py, .ipynb, .cpp, .java, manifests). Breakdown:")
     for ext, count in ext_counts.most_common():
-        print(f"  {ext or 'no-extension'}: {count} files")
+        print(f"  {ext or 'manifest'}: {count} files")
     print()
 
     all_docs = []
     file_chunk_counts = {}
     for fpath in tqdm(files, desc="Chunking"):
         try:
-            text = fpath.read_text(encoding="utf-8", errors="ignore")
-            if not text.strip():
+            raw_text = fpath.read_text(encoding="utf-8", errors="ignore")
+            if not raw_text.strip():
                 continue
-            splitter = get_splitter(fpath.suffix)
+
+            # Special parser for Jupyter Notebooks (.ipynb) to extract Python code & markdown cells cleanly
+            if fpath.suffix.lower() == ".ipynb":
+                try:
+                    nb = json.loads(raw_text)
+                    code_cells = []
+                    for cell in nb.get("cells", []):
+                        if cell.get("cell_type") == "code":
+                            code_cells.extend(cell.get("source", []))
+                            code_cells.append("\n\n")
+                        elif cell.get("cell_type") == "markdown":
+                            code_cells.append("# [Markdown Cell]\n")
+                            code_cells.extend(cell.get("source", []))
+                            code_cells.append("\n\n")
+                    text = "".join(code_cells)
+                    if not text.strip():
+                        continue
+                except Exception:
+                    text = raw_text
+            else:
+                text = raw_text
+
+            splitter = get_splitter(fpath.suffix.lower())
             chunks = splitter.create_documents(
                 texts=[text],
                 metadatas=[{
