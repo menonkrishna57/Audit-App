@@ -11,6 +11,10 @@ inputs:
     description: "Google Gemini API key for AI RAG audit (optional)"
     required: false
     default: ""
+  jina-api-key:
+    description: "Jina AI API key for embeddings or LLM audit (optional)"
+    required: false
+    default: ""
   fail-on-critical:
     description: "Fail the workflow if CRITICAL security findings are discovered (true/false)"
     required: false
@@ -32,7 +36,7 @@ runs:
         pip install -r ${{ github.action_path }}/requirements.txt
 
     - name: Start Ephemeral Qdrant Service
-      if: inputs.google-api-key != ''
+      if: inputs.google-api-key != '' || inputs.jina-api-key != ''
       shell: bash
       run: |
         docker run -d -p 6333:6333 --name qdrant-ephemeral qdrant/qdrant:latest
@@ -48,6 +52,7 @@ runs:
       shell: bash
       env:
         GOOGLE_API_KEY: ${{ inputs.google-api-key }}
+        JINA_API_KEY: ${{ inputs.jina-api-key }}
         QDRANT_URL: "http://localhost:6333"
         GEMINI_MODEL: "gemini-3.5-flash-lite"
         GOOGLE_EMBEDDING_MODEL: "gemini-embedding-001"

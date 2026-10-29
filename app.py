@@ -85,27 +85,41 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("Model Configuration")
 
-# Embedding Model Selector (smart default based on available keys)
-default_emb_idx = 1 if HAS_GOOGLE_KEY else 0
+# Embedding Model Selector
+emb_options = ["google", "jina", "ollama"]
+if HAS_GOOGLE_KEY:
+    default_emb_idx = 0  # google
+elif HAS_JINA_KEY:
+    default_emb_idx = 1  # jina
+else:
+    default_emb_idx = 2  # ollama
+
 embedding_provider = st.sidebar.selectbox(
     "Embedding Provider",
-    options=["ollama", "google", "jina"],
+    options=emb_options,
     index=default_emb_idx,
-    help="Must match the provider used during repository ingestion."
+    help="Select provider for chunk vectorization into Qdrant."
 )
 
 # Querying Model Selector
-default_query_idx = 1 if HAS_GOOGLE_KEY else 0
+llm_options = ["gemini", "jina", "ollama"]
+if HAS_GOOGLE_KEY:
+    default_query_idx = 0  # gemini
+elif HAS_JINA_KEY:
+    default_query_idx = 1  # jina
+else:
+    default_query_idx = 2  # ollama
+
 query_provider = st.sidebar.selectbox(
     "Querying LLM Provider",
-    options=["ollama", "gemini"],
+    options=llm_options,
     index=default_query_idx,
-    help="LLM provider for generating reports."
+    help="Select LLM provider for security report generation."
 )
 
-gemini_model = None
+selected_model = None
 if query_provider == "gemini":
-    gemini_model = st.sidebar.selectbox(
+    selected_model = st.sidebar.selectbox(
         "Gemini Model",
         options=[
             "gemini-3.5-flash",
@@ -116,9 +130,31 @@ if query_provider == "gemini":
         index=0,
         help="Select Gemini model version. (3.5-flash recommended; 3.5-flash-lite for fastest speed)."
     )
+elif query_provider == "jina":
+    selected_model = st.sidebar.selectbox(
+        "Jina AI Model",
+        options=[
+            "jina-deepsearch-v1",
+            "jina-vlm-v1",
+        ],
+        index=0,
+        help="Jina AI OpenAI-compatible chat reasoning endpoint."
+    )
+elif query_provider == "ollama":
+    selected_model = st.sidebar.text_input(
+        "Ollama Model Name",
+        value="qwen3:4b-q4_K_M",
+        help="Local Ollama model identifier."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.info("💡 **Tip:** Always use the same Embedding Provider for both Ingestion and Reports.")
+st.sidebar.caption("""
+**Provider Roles:**
+- **Jina AI**: Specialized code embeddings (`jina-embeddings-v2-base-code`) + DeepSearch reasoning.
+- **Google Gemini**: High-speed LLM reasoning (`gemini-3.5-flash`) + embeddings (`gemini-embedding-001`).
+- **Ollama**: 100% local, air-gapped LLM & embeddings.
+""")
 
 # --- Main Layout ---
 st.title("🛡️ Code Audit & Security Compliance Dashboard")
@@ -186,7 +222,7 @@ with tab2:
                         embeddings_provider=embedding_provider,
                         categories=["sbom", "cbom", "rca", "gap_analysis"],
                         output_dir="reports",
-                        model=gemini_model
+                        model=selected_model
                     )
                     st.success("✅ Complete security audit finished! All 4 audit reports and executive summary generated.")
                     st.info("Check **Tab 3: Past Audit Reports** to view and download the generated report with line numbers and recommended fixes.")
@@ -206,7 +242,7 @@ with tab2:
     if st.button(f"🔍 Run {REPORT_CONFIG[selected_report]['title']}"):
         with st.spinner(f"Generating {REPORT_CONFIG[selected_report]['title']}..."):
             try:
-                llm = get_llm(query_provider, model_name=gemini_model)
+                llm = get_llm(query_provider, model_name=selected_model)
                 vectorstore = get_vectorstore(embedding_provider)
                 
                 config = REPORT_CONFIG[selected_report]

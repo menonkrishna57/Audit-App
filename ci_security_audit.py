@@ -513,6 +513,78 @@ def extract_rca_deterministic(repo_path: Path) -> dict:
             "// Safe ProcessBuilder invocation:\nProcessBuilder pb = new ProcessBuilder(\"cmd\", arg1, arg2);\nProcess p = pb.start();",
             "Use ProcessBuilder with discrete arguments to prevent shell expansion."
         ),
+        (
+            "Lack of Input Path Validation (Path Traversal Risk)",
+            "MEDIUM",
+            r"(?:st\.text_input\([^)]*(?:Path|path|repo|folder|dir)|filedialog\.askdirectory\()",
+            "Lack of input validation",
+            "Accepting file or folder paths directly from user input without directory boundary validation allows path traversal or unauthorized directory access.",
+            "# Validate and restrict path within allowed directory root:\nfrom pathlib import Path\nresolved_path = Path(user_path).resolve()\nif not resolved_path.is_relative_to(ALLOWED_BASE_DIR):\n    raise PermissionError('Access denied: path outside allowed root.')",
+            "Enforce strict path containment checking using Path.resolve() and Path.is_relative_to() to prevent path traversal."
+        ),
+        (
+            "Direct Prompt Interpolation (LLM Prompt Injection Risk)",
+            "MEDIUM",
+            r"\.replace\(\s*['\"]\{context\}['\"]\s*,\s*context\)",
+            "Lack of input validation",
+            "Direct string substitution of untrusted repository code chunks into the LLM system prompt without isolation tags or escaping permits Prompt Injection (OWASP LLM01).",
+            "# Encapsulate untrusted code chunks in clear structural XML tags:\nsafe_context = context.replace('</code_chunk>', '')\nprompt = f'''{SYSTEM_PROMPT}\n<code_chunk>\n{safe_context}\n</code_chunk>\n'''",
+            "Wrap untrusted text chunks within explicit delimiter tags and instruct the model to treat content strictly as data."
+        ),
+        (
+            "Unauthenticated Database Connection",
+            "MEDIUM",
+            r"QdrantClient\(\s*url\s*=\s*QDRANT_URL\s*\)",
+            "Insecure default configuration",
+            "Connecting to the vector database over unauthenticated plain HTTP leaves vector embeddings and repository chunks exposed to unauthorized network access.",
+            "# Configure authentication and TLS transport for QdrantClient:\nqdrant_key = os.getenv('QDRANT_API_KEY')\nclient = QdrantClient(url=QDRANT_URL, api_key=qdrant_key)",
+            "Pass an API key and enforce HTTPS when connecting to Qdrant in production environments."
+        ),
+        (
+            "Destructive Operation Without Confirmation",
+            "MEDIUM",
+            r"client\.delete_collection\(COLLECTION_NAME\)",
+            "Missing security control",
+            "Unconditional deletion of the database collection on every ingestion runs without user confirmation, risking accidental data loss.",
+            "# Require explicit confirmation or flag before dropping collection:\nif os.getenv('RECREATE_INDEX', 'false').lower() == 'true':\n    client.delete_collection(COLLECTION_NAME)",
+            "Add an explicit opt-in confirmation flag before executing destructive database operations."
+        ),
+        (
+            "Unbounded File Read (Resource Exhaustion / DoS)",
+            "LOW",
+            r"fpath\.read_text\([^)]*\)",
+            "Lack of input validation",
+            "Reading whole file contents into memory without file-size boundary limits makes the service vulnerable to Out-Of-Memory Denial of Service on large files.",
+            "# Enforce file size limit before reading into memory:\nMAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB\nif fpath.stat().st_size > MAX_FILE_BYTES:\n    print(f'Skipping oversized file {fpath}')\n    continue\nraw_text = fpath.read_text(encoding='utf-8', errors='ignore')",
+            "Check file size with stat().st_size before loading full text into memory."
+        ),
+        (
+            "Sensitive Exception Disclosure",
+            "LOW",
+            r"st\.error\(f?['\"].*?\{e\}['\"]\)",
+            "Improper error handling",
+            "Directly rendering raw Python exception messages to end users can leak internal stack traces, paths, or connection strings.",
+            "# Log full traceback internally and display generic message to user:\nimport logging\nlogging.error('Ingestion error:', exc_info=e)\nst.error('An error occurred during ingestion. Please check application logs.')",
+            "Log raw error tracebacks to server logs and provide sanitized error messages in the UI."
+        ),
+        (
+            "Broad Exception Handling Masking Faults",
+            "LOW",
+            r"except\s+Exception\s*:\s*(?:pass|return\s+[\"\'][\"\'])",
+            "Improper error handling",
+            "Catching general Exception with 'pass' or empty return silently suppresses critical errors (e.g. PermissionError, MemoryError) without an audit trail.",
+            "# Catch specific exceptions and log unexpected failures:\nexcept (IOError, ValueError) as err:\n    logger.warning('Handled expected error: %s', err)\n    return ''",
+            "Replace generic 'except Exception' with specific exception types and appropriate logging."
+        ),
+        (
+            "Use of Weak Hash Algorithm (MD5)",
+            "LOW",
+            r"hashlib\.md5\(",
+            "Missing cryptographic control",
+            "MD5 is cryptographically weak and prone to collision attacks. If used strictly for cache keys, usedforsecurity=False should be set in Python 3.9+.",
+            "# Use SHA-256 for collision resistance or declare usedforsecurity=False:\nhashlib.sha256(data.encode()).hexdigest()[:8]\n# Or if strictly caching:\nhashlib.md5(data.encode(), usedforsecurity=False).hexdigest()[:8]",
+            "Upgrade to SHA-256 for hash security, or add usedforsecurity=False for non-security checksums."
+        ),
     ]
 
     for s_file in source_files:
@@ -613,6 +685,14 @@ def extract_cwe_gap_deterministic(repo_path: Path, rca_data: dict, cbom_data: di
         "Predictable Random for Security Tokens": ("CWE-330", "Use of Insufficiently Random Values"),
         "Unbounded Buffer Copy (strcpy / gets in C/C++)": ("CWE-120", "Buffer Copy without Checking Size of Input"),
         "Java Runtime Command Execution": ("CWE-78", "OS Command Injection in Java"),
+        "Lack of Input Path Validation (Path Traversal Risk)": ("CWE-22", "Improper Limitation of a Pathname to a Restricted Directory"),
+        "Direct Prompt Interpolation (LLM Prompt Injection Risk)": ("CWE-20", "Improper Input Validation (Prompt Injection Risk)"),
+        "Unauthenticated Database Connection": ("CWE-306", "Missing Authentication for Critical Function"),
+        "Destructive Operation Without Confirmation": ("CWE-862", "Missing Authorization for Sensitive Action"),
+        "Unbounded File Read (Resource Exhaustion / DoS)": ("CWE-400", "Uncontrolled Resource Consumption"),
+        "Sensitive Exception Disclosure": ("CWE-209", "Generation of Error Message Containing Sensitive Information"),
+        "Broad Exception Handling Masking Faults": ("CWE-396", "Declaration of Catch for Generic Exception"),
+        "Use of Weak Hash Algorithm (MD5)": ("CWE-327", "Use of a Broken or Risky Cryptographic Algorithm"),
     }
 
     for f in rca_data.get("findings", []):
@@ -646,17 +726,25 @@ def extract_cwe_gap_deterministic(repo_path: Path, rca_data: dict, cbom_data: di
         })
 
     # 1. OWASP Top 10 Gap Table Assessment
+    has_a01 = any("CWE-862" in c["cwe_id"] or "CWE-22" in c["cwe_id"] for c in cwe_findings)
+    has_a02 = any("CWE-327" in c["cwe_id"] or "CWE-330" in c["cwe_id"] for c in cwe_findings) or (cbom_data.get("weak_count", 0) > 0)
+    has_a03 = any("CWE-78" in c["cwe_id"] or "CWE-89" in c["cwe_id"] or "CWE-95" in c["cwe_id"] or "CWE-20" in c["cwe_id"] for c in cwe_findings)
+    has_a05 = any("CWE-295" in c["cwe_id"] or "CWE-306" in c["cwe_id"] for c in cwe_findings)
+    has_a07 = any("CWE-798" in c["cwe_id"] for c in cwe_findings)
+    has_a08 = any("CWE-502" in c["cwe_id"] for c in cwe_findings)
+    has_a09 = any("CWE-209" in c["cwe_id"] or "CWE-396" in c["cwe_id"] for c in cwe_findings)
+
     owasp_categories = [
-        ("A01:2021", "Broken Access Control", "No critical authorization bypasses observed", "Role and route guards", "✅ Covered", "LOW"),
-        ("A02:2021", "Cryptographic Failures", "Legacy hashing / PRNG spotted" if cbom_data.get("weak_count", 0) > 0 else "Strong standard cryptography", "hashlib, secrets", "⚠️ Partial" if cbom_data.get("weak_count", 0) > 0 else "✅ Covered", "MEDIUM" if cbom_data.get("weak_count", 0) > 0 else "LOW"),
-        ("A03:2021", "Injection", f"{sum(1 for c in cwe_findings if 'CWE-78' in c['cwe_id'] or 'CWE-89' in c['cwe_id'] or 'CWE-95' in c['cwe_id'])} potential injection sites" if any('CWE-78' in c['cwe_id'] or 'CWE-95' in c['cwe_id'] for c in cwe_findings) else "No injection patterns detected", "Structured argument passing", "❌ Gap" if any(c['severity'] == 'CRITICAL' and 'Injection' in c['title'] for c in cwe_findings) else "✅ Covered", "CRITICAL" if any(c['severity'] == 'CRITICAL' and 'Injection' in c['title'] for c in cwe_findings) else "LOW"),
+        ("A01:2021", "Broken Access Control", "Unvalidated path traversal / missing auth control" if has_a01 else "No critical access control gaps", "Role & boundary checks", "⚠️ Partial" if has_a01 else "✅ Covered", "MEDIUM" if has_a01 else "LOW"),
+        ("A02:2021", "Cryptographic Failures", "Legacy hashing / unverified crypto spotted" if has_a02 else "Strong standard cryptography", "hashlib, secrets", "⚠️ Partial" if has_a02 else "✅ Covered", "MEDIUM" if has_a02 else "LOW"),
+        ("A03:2021", "Injection", "LLM prompt injection or command patterns detected" if has_a03 else "No injection patterns detected", "Structured argument passing", "⚠️ Partial" if has_a03 else "✅ Covered", "MEDIUM" if has_a03 else "LOW"),
         ("A04:2021", "Insecure Design", "Threat modeling review recommended", "Separation of concerns", "⚠️ Partial", "LOW"),
-        ("A05:2021", "Security Misconfiguration", "TLS cert validation or debug configs" if any('CWE-295' in c['cwe_id'] for c in cwe_findings) else "Standard configurations applied", "Default configurations", "❌ Gap" if any('CWE-295' in c['cwe_id'] for c in cwe_findings) else "✅ Covered", "HIGH" if any('CWE-295' in c['cwe_id'] for c in cwe_findings) else "LOW"),
+        ("A05:2021", "Security Misconfiguration", "Unauthenticated service connection or TLS configs" if has_a05 else "Standard configurations applied", "Default configurations", "⚠️ Partial" if has_a05 else "✅ Covered", "MEDIUM" if has_a05 else "LOW"),
         ("A06:2021", "Vulnerable & Outdated Components", "Dependency manifests parsed via SBOM", "Requirements & package pinning", "✅ Covered", "LOW"),
-        ("A07:2021", "Identification & Authentication", "Hardcoded credentials observed" if any('CWE-798' in c['cwe_id'] for c in cwe_findings) else "No hardcoded credentials", "Environment variable authentication", "❌ Gap" if any('CWE-798' in c['cwe_id'] for c in cwe_findings) else "✅ Covered", "CRITICAL" if any('CWE-798' in c['cwe_id'] for c in cwe_findings) else "LOW"),
-        ("A08:2021", "Software & Data Integrity", "Pickle / deserialization risks" if any('CWE-502' in c['cwe_id'] for c in cwe_findings) else "Integrity checks intact", "Safe deserialization", "⚠️ Partial" if any('CWE-502' in c['cwe_id'] for c in cwe_findings) else "✅ Covered", "HIGH" if any('CWE-502' in c['cwe_id'] for c in cwe_findings) else "LOW"),
-        ("A09:2021", "Security Logging & Monitoring", "Review application audit log coverage", "Standard logger output", "⚠️ Partial", "LOW"),
-        ("A10:2021", "Server-Side Request Forgery", "External requests require URL destination allowlisting", "requests library checks", "✅ Covered", "LOW"),
+        ("A07:2021", "Identification & Authentication", "Hardcoded credentials observed" if has_a07 else "No hardcoded credentials", "Environment variable authentication", "❌ Gap" if has_a07 else "✅ Covered", "CRITICAL" if has_a07 else "LOW"),
+        ("A08:2021", "Software & Data Integrity", "Pickle / deserialization risks" if has_a08 else "Integrity checks intact", "Safe deserialization", "⚠️ Partial" if has_a08 else "✅ Covered", "HIGH" if has_a08 else "LOW"),
+        ("A09:2021", "Security Logging & Monitoring", "Sensitive exception string output observed" if has_a09 else "Review logging coverage", "Standard logger output", "⚠️ Partial" if has_a09 else "✅ Covered", "LOW"),
+        ("A10:2021", "Server-Side Request Forgery", "External requests require destination allowlisting", "requests library checks", "✅ Covered", "LOW"),
     ]
 
     owasp_table_lines = [
@@ -721,7 +809,13 @@ def extract_cwe_gap_deterministic(repo_path: Path, rca_data: dict, cbom_data: di
 # MAIN EXECUTION ROUTINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_ci_audit(target_path: str = ".", fail_on_critical: bool = False, output_dir: str = "reports") -> int:
+def run_ci_audit(
+    target_path: str = ".",
+    fail_on_critical: bool = False,
+    output_dir: str = "reports",
+    provider: str = None,
+    embeddings_provider: str = None
+) -> int:
     repo_path = Path(target_path).resolve()
     print("=" * 70)
     print(f"[Audit-App] CI/CD Security Audit Pipeline")
@@ -730,10 +824,35 @@ def run_ci_audit(target_path: str = ".", fail_on_critical: bool = False, output_
     print("=" * 70)
 
     google_api_key = os.getenv("GOOGLE_API_KEY")
+    jina_api_key = os.getenv("JINA_API_KEY")
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_online = check_qdrant_online(qdrant_url)
 
-    use_ai_rag = bool(google_api_key and qdrant_online)
+    # Auto-detect best embedding provider
+    if not embeddings_provider:
+        if jina_api_key:
+            embeddings_provider = "jina"
+        elif google_api_key:
+            embeddings_provider = "google"
+        else:
+            embeddings_provider = "ollama"
+
+    # Auto-detect best LLM provider
+    if not provider:
+        if google_api_key:
+            provider = "gemini"
+        elif jina_api_key:
+            provider = "jina"
+        else:
+            provider = "ollama"
+
+    # Check if AI mode is feasible
+    can_run_ai = False
+    if qdrant_online:
+        has_llm_key = (provider == "gemini" and bool(google_api_key)) or (provider == "jina" and bool(jina_api_key)) or (provider == "ollama")
+        has_emb_key = (embeddings_provider == "google" and bool(google_api_key)) or (embeddings_provider == "jina" and bool(jina_api_key)) or (embeddings_provider == "ollama")
+        can_run_ai = bool(has_llm_key and has_emb_key)
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     timestamp_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -744,26 +863,27 @@ def run_ci_audit(target_path: str = ".", fail_on_critical: bool = False, output_
     report_content.append(f"# Audit-App Complete Security Audit Report: `{repo_path.name}`")
     report_content.append(f"_Generated on: {timestamp} (UTC)_  ")
     report_content.append(f"_Audited Repository: `{repo_path}`_  ")
-    report_content.append(f"_Execution Engine: {'AI-Powered RAG (Gemini + Qdrant)' if use_ai_rag else 'Deterministic Codebase Security Engine'}_  \n")
+    engine_desc = f"AI-Powered RAG (LLM: {provider}, Embeddings: {embeddings_provider})" if can_run_ai else "Deterministic Codebase Security Engine"
+    report_content.append(f"_Execution Engine: {engine_desc}_  \n")
 
-    if use_ai_rag:
-        print(f"[OK] GOOGLE_API_KEY detected and Qdrant is online at {qdrant_url}")
-        print("[OK] Executing complete AI-powered RAG pipeline (SBOM, CBOM, RCA, CWE Gap Analysis)...")
+    if can_run_ai:
+        print(f"[OK] AI Credentials detected (LLM: {provider}, Embeddings: {embeddings_provider}) and Qdrant is online at {qdrant_url}")
+        print(f"[OK] Executing complete AI-powered RAG pipeline ({provider} + {embeddings_provider})...")
         try:
             from ingest import ingest
             from agent import run_audit
-            print(f"\n[Step 1/2] Ingesting repository '{repo_path}' into Qdrant...")
-            ingest(str(repo_path), embeddings_provider="google")
-            print("\n[Step 2/2] Generating SBOM, CBOM, RCA, and CWE Gap Analysis audit reports...")
+            print(f"\n[Step 1/2] Ingesting repository '{repo_path}' into Qdrant using {embeddings_provider} embeddings...")
+            ingest(str(repo_path), embeddings_provider=embeddings_provider)
+            print(f"\n[Step 2/2] Generating SBOM, CBOM, RCA, and CWE Gap Analysis audit reports with {provider}...")
             run_audit(
                 output_format="json",
-                provider="gemini",
-                embeddings_provider="google",
+                provider=provider,
+                embeddings_provider=embeddings_provider,
                 categories=["sbom", "cbom", "rca", "gap_analysis"],
                 output_dir=output_dir,
                 fail_on_critical=fail_on_critical
             )
-            print("\n[OK] AI RAG Complete Security Audit finished successfully.")
+            print(f"\n[OK] AI RAG Complete Security Audit ({provider}) finished successfully.")
             return 0
         except Exception as e:
             print(f"\n[Warning] AI RAG execution encountered an error: {e}")
@@ -874,6 +994,16 @@ if __name__ == "__main__":
     parser.add_argument("path", nargs="?", default=".", help="Path to repo to audit (default: current dir)")
     parser.add_argument("--fail-on-critical", action="store_true", help="Exit with code 1 on CRITICAL findings")
     parser.add_argument("--output-dir", default="reports", help="Directory for reports (default: reports)")
+    parser.add_argument("--provider", default=None, choices=["gemini", "jina", "ollama"],
+                        help="LLM provider for AI RAG (default: auto-detected from API keys)")
+    parser.add_argument("--embeddings", default=None, choices=["google", "jina", "ollama"],
+                        help="Embeddings provider for AI RAG (default: auto-detected from API keys)")
     args = parser.parse_args()
 
-    sys.exit(run_ci_audit(target_path=args.path, fail_on_critical=args.fail_on_critical, output_dir=args.output_dir))
+    sys.exit(run_ci_audit(
+        target_path=args.path,
+        fail_on_critical=args.fail_on_critical,
+        output_dir=args.output_dir,
+        provider=args.provider,
+        embeddings_provider=args.embeddings
+    ))

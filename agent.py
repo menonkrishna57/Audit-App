@@ -80,6 +80,42 @@ class DirectJinaEmbeddings(Embeddings):
     def embed_query(self, text: str) -> list[float]:
         return self.embed_documents([text])[0]
 
+class DirectJinaChatLLM:
+    """Lightweight Jina AI Chat Completion client using OpenAI-compatible schema."""
+    def __init__(self, jina_api_key: str, model_name: str = "jina-deepsearch-v1"):
+        self.api_key = jina_api_key
+        self.model_name = model_name
+        self.url = "https://deepsearch.jina.ai/v1/chat/completions"
+
+    def invoke(self, prompt: str) -> str:
+        import requests
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": "You are an expert code security auditor and analyst."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1
+        }
+        try:
+            resp = requests.post(self.url, json=payload, headers=headers, timeout=90)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Fallback to general api endpoint
+            fallback_url = "https://api.jina.ai/v1/chat/completions"
+            resp = requests.post(fallback_url, json=payload, headers=headers, timeout=90)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            raise ValueError(f"Jina Chat API error ({resp.status_code}): {resp.text}")
+        except Exception as e:
+            raise ValueError(f"Failed to query Jina Chat API: {e}")
+
 def extract_text_content(res) -> str:
     """Extract clean string text from LLM response (handling string, list of dicts, or AIMessage)."""
     if res is None:
@@ -136,7 +172,7 @@ def get_embeddings(provider: str):
 
 
 def get_llm(provider: str, model_name: str = None):
-    """Return the appropriate LangChain LLM based on the chosen provider."""
+    """Return the appropriate LLM based on the chosen provider (gemini, jina, or ollama)."""
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key = os.getenv("GOOGLE_API_KEY")
@@ -150,6 +186,14 @@ def get_llm(provider: str, model_name: str = None):
             temperature=0.1,
             google_api_key=api_key,
         )
+    elif provider == "jina":
+        api_key = os.getenv("JINA_API_KEY")
+        if not api_key:
+            console.print("[bold red]Error:[/bold red] JINA_API_KEY not found in environment or .env. Get a free key at https://jina.ai")
+            raise SystemExit(1)
+        selected_model = model_name or "jina-deepsearch-v1"
+        console.print(f"[bold green]Provider:[/bold green] Jina AI ({selected_model})\n")
+        return DirectJinaChatLLM(jina_api_key=api_key, model_name=selected_model)
     else:
         if OllamaLLM is None:
             raise ImportError("langchain-ollama is required for Ollama LLM. Please install with 'pip install langchain-ollama'")
@@ -328,8 +372,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a code audit against an indexed codebase.")
     parser.add_argument("format", nargs="?", default="markdown", choices=["markdown", "json"],
                         help="Output format (default: markdown)")
-    parser.add_argument("--provider", default="ollama", choices=["ollama", "gemini"],
-                        help="LLM provider to use (default: ollama)")
+    parser.add_argument("--provider", default="gemini", choices=["ollama", "gemini", "jina"],
+                        help="LLM provider to use (default: gemini)")
     parser.add_argument("--model", default=None,
                         help="Specific model to use (e.g. gemini-3.5-flash-lite, gemini-3.5-flash, gemini-3.8-flash)")
     parser.add_argument("--embeddings", default="ollama", choices=["ollama", "google", "jina"],
